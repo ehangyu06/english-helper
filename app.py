@@ -119,28 +119,29 @@ def show_image(src: str, **kwargs):
 # 학습 기록 상세보기 + 수정 (전체 화면 팝업)
 # -----------------------------------------------------------------------------
 def render_detail(rec: dict):
-    """선택한 학습 기록을 크게 보여주고, 키워드/사진을 수정·삭제할 수 있게 한다."""
+    """선택한 학습 기록을 등록 화면과 같은 좌(사진)/우(수정) 구성으로 보여준다."""
     rid = rec["id"]
 
-    show_image(rec["image_src"], use_container_width=True)
-    st.caption(f"📅 저장일: {rec['created_at']}")
-
-    new_keywords = st.text_input(
-        "핵심 키워드 (수정 가능)",
-        value=rec["keywords"],
-        key=f"edit_kw_{rid}",
-    )
-
-    replace = st.file_uploader(
-        "사진 교체 (선택 사항 — 새 사진을 올리면 교체됩니다)",
-        type=["jpg", "jpeg", "png", "webp"],
-        key=f"edit_img_{rid}",
-    )
-
-    link_button(
-        "🔁 이 기록으로 ChatGPT 복습하기",
-        build_chatgpt_url(make_quiz_prompt(new_keywords or rec["keywords"])),
-    )
+    # 사진은 왼쪽에 적당한 크기로, 수정 입력은 오른쪽에 (처음 등록 화면과 동일한 느낌)
+    pcol, ecol = st.columns([2, 3], gap="medium")
+    with pcol:
+        show_image(rec["image_src"], use_container_width=True)
+        st.caption(f"📅 저장일: {rec['created_at']}")
+    with ecol:
+        new_keywords = st.text_input(
+            "핵심 키워드 (수정 가능)",
+            value=rec["keywords"],
+            key=f"edit_kw_{rid}",
+        )
+        replace = st.file_uploader(
+            "사진 교체 (선택 사항 — 새 사진을 올리면 교체됩니다)",
+            type=["jpg", "jpeg", "png", "webp"],
+            key=f"edit_img_{rid}",
+        )
+        link_button(
+            "🔁 이 기록으로 ChatGPT 복습하기",
+            build_chatgpt_url(make_quiz_prompt(new_keywords or rec["keywords"])),
+        )
 
     st.divider()
     c1, c2, c3 = st.columns(3)
