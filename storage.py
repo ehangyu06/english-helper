@@ -11,6 +11,8 @@
 # =============================================================================
 
 import os
+import re
+import uuid
 import sqlite3
 import random
 import mimetypes
@@ -96,14 +98,27 @@ def init_storage():
 # -----------------------------------------------------------------------------
 # 저장 (사진 업로드 + 기록)
 # -----------------------------------------------------------------------------
+def _unique_name(file_name: str) -> str:
+    """
+    파일명을 항상 고유하게 만든다.
+    아이패드 사진은 이름이 모두 'image.jpg'처럼 같게 올라오는 경우가 많아,
+    날짜+마이크로초+무작위 코드를 붙여 절대 겹치지 않도록 한다.
+    한글/공백/특수문자도 Supabase가 안전하게 받도록 정리한다.
+    """
+    base, ext = os.path.splitext(file_name)
+    ext = ext.lower() if ext else ".jpg"
+    base = re.sub(r"[^A-Za-z0-9._-]", "", base)[:30] or "img"
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    return f"{stamp}_{uuid.uuid4().hex[:8]}_{base}{ext}"
+
+
 def _store_image(file_name: str, file_bytes: bytes) -> str:
     """사진을 저장하고, DB에 기록할 경로(로컬 경로 또는 공개 URL)를 돌려준다."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    safe_name = f"{timestamp}_{file_name}"
+    safe_name = _unique_name(file_name)
 
     if use_supabase():
         client = _client()
-        mime = mimetypes.guess_type(file_name)[0] or "image/jpeg"
+        mime = mimetypes.guess_type(safe_name)[0] or "image/jpeg"
         client.storage.from_(BUCKET).upload(
             path=safe_name,
             file=file_bytes,
