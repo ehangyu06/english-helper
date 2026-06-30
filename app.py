@@ -122,26 +122,34 @@ def render_detail(rec: dict):
     """선택한 학습 기록을 등록 화면과 같은 좌(사진)/우(수정) 구성으로 보여준다."""
     rid = rec["id"]
 
-    # 사진은 왼쪽에 적당한 크기로, 수정 입력은 오른쪽에 (처음 등록 화면과 동일한 느낌)
-    pcol, ecol = st.columns([2, 3], gap="medium")
-    with pcol:
-        show_image(rec["image_src"], use_container_width=True)
-        st.caption(f"📅 저장일: {rec['created_at']}")
-    with ecol:
-        new_keywords = st.text_input(
-            "핵심 키워드 (수정 가능)",
-            value=rec["keywords"],
-            key=f"edit_kw_{rid}",
+    # 사진은 화면 높이에 맞춰 적당히 크게(세로로 너무 길지 않게) 보여주고,
+    # 글씨를 또렷하게 보려면 '원본 크게 보기'로 새 창에서 확대(핀치 줌)할 수 있게 한다.
+    src = rec["image_src"]
+    if src and (src.startswith("http://") or src.startswith("https://")):
+        st.markdown(
+            f'<img src="{src}" style="max-height:55vh; max-width:100%; width:auto; '
+            f'display:block; margin:0 auto; border-radius:8px;" />',
+            unsafe_allow_html=True,
         )
-        replace = st.file_uploader(
-            "사진 교체 (선택 사항 — 새 사진을 올리면 교체됩니다)",
-            type=["jpg", "jpeg", "png", "webp"],
-            key=f"edit_img_{rid}",
-        )
-        link_button(
-            "🔁 이 기록으로 ChatGPT 복습하기",
-            build_chatgpt_url(make_quiz_prompt(new_keywords or rec["keywords"])),
-        )
+        link_button("🔍 사진 원본 크게 보기 (새 창에서 확대)", src)
+    else:
+        show_image(src, use_container_width=True)
+    st.caption(f"📅 저장일: {rec['created_at']}")
+
+    new_keywords = st.text_input(
+        "핵심 키워드 (수정 가능)",
+        value=rec["keywords"],
+        key=f"edit_kw_{rid}",
+    )
+    replace = st.file_uploader(
+        "사진 교체 (선택 사항 — 새 사진을 올리면 교체됩니다)",
+        type=["jpg", "jpeg", "png", "webp"],
+        key=f"edit_img_{rid}",
+    )
+    link_button(
+        "🔁 이 기록으로 ChatGPT 복습하기",
+        build_chatgpt_url(make_quiz_prompt(new_keywords or rec["keywords"])),
+    )
 
     st.divider()
     c1, c2, c3 = st.columns(3)
