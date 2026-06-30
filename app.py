@@ -227,6 +227,26 @@ def main():
         st.success(st.session_state["flash"])
         st.session_state["flash"] = None
 
+    # 사진 옆 키워드 입력 패널을, 사진을 스크롤해도 화면에 계속 붙어 있도록(sticky) 만든다.
+    # (사진/입력 두 열 중 '입력 열'만 골라서 고정. 화면이 좁은 휴대폰 세로 모드에서는 적용 안 함.)
+    st.markdown(
+        """
+        <style>
+        @media (min-width: 768px) {
+          div[data-testid="stHorizontalBlock"]:has(.kw-sticky-marker):not(:has(div[data-testid="stHorizontalBlock"] .kw-sticky-marker)) > div[data-testid="stColumn"]:last-child,
+          div[data-testid="stHorizontalBlock"]:has(.kw-sticky-marker):not(:has(div[data-testid="stHorizontalBlock"] .kw-sticky-marker)) > div[data-testid="column"]:last-child {
+              position: sticky;
+              top: 4rem;
+              align-self: flex-start;
+              z-index: 1;
+          }
+        }
+        .kw-sticky-marker { display: none; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     st.divider()
 
     left, right = st.columns([2, 1], gap="large")
@@ -244,44 +264,41 @@ def main():
             type=["jpg", "jpeg", "png", "webp"],
             key=f"uploader_{rnd}",
         )
-        keywords = st.text_input(
-            "외우고 싶은 핵심 숙어/단어 키워드 (2~3개, 쉼표로 구분)",
-            placeholder="예) hang out, on second thought, by the way",
-            key=f"keywords_{rnd}",
-        )
 
         fixed_bytes, fixed_name = (None, None)
         if uploaded is not None:
             fixed_bytes, fixed_name = correct_orientation(
                 uploaded.getbuffer().tobytes(), uploaded.name
             )
-            st.image(fixed_bytes, caption="업로드한 교재 사진 미리보기", use_container_width=True)
 
-        col_save, col_practice = st.columns(2)
-
-        with col_save:
-            if st.button("💾 학습 기록 저장하기", use_container_width=True):
+        def write_pane():
+            """키워드 입력 + 저장/연습 버튼 묶음. (사진 옆 고정 패널로도, 단독으로도 사용)"""
+            kw = st.text_input(
+                "외우고 싶은 핵심 숙어/단어 키워드 (2~3개, 쉼표로 구분)",
+                placeholder="예) hang out, on second thought, by the way",
+                key=f"keywords_{rnd}",
+            )
+            if st.button("💾 학습 기록 저장하기", use_container_width=True, key=f"save_{rnd}"):
                 if uploaded is None:
                     st.warning("먼저 교재 사진을 업로드해 주세요.")
-                elif not keywords.strip():
+                elif not kw.strip():
                     st.warning("핵심 키워드를 입력해 주세요.")
                 else:
                     try:
-                        storage.save_study(keywords.strip(), fixed_name, fixed_bytes)
+                        storage.save_study(kw.strip(), fixed_name, fixed_bytes)
                         # 입력칸을 비우고 다음 학습을 바로 등록할 수 있도록 새 폼으로 전환
                         st.session_state["form_round"] += 1
                         st.session_state["flash"] = (
-                            f"저장 완료! ‘{keywords.strip()}’ — 이어서 다음 학습을 등록하세요."
+                            f"저장 완료! ‘{kw.strip()}’ — 이어서 다음 학습을 등록하세요."
                         )
                         st.rerun()
                     except Exception as e:
                         st.error(f"저장 중 오류가 발생했어요: {e}")
 
-        with col_practice:
-            if keywords.strip():
+            if kw.strip():
                 link_button(
                     "💬 ChatGPT와 실전 연습하기",
-                    build_chatgpt_url(make_roleplay_prompt(keywords.strip())),
+                    build_chatgpt_url(make_roleplay_prompt(kw.strip())),
                 )
             else:
                 st.button(
@@ -289,11 +306,25 @@ def main():
                     use_container_width=True,
                     disabled=True,
                     help="먼저 키워드를 입력하세요.",
+                    key=f"practice_disabled_{rnd}",
                 )
 
-        with st.expander("🔎 ChatGPT에게 전달될 프롬프트 미리보기"):
-            preview_kw = keywords.strip() if keywords.strip() else "{입력한 키워드}"
-            st.code(make_roleplay_prompt(preview_kw), language="text")
+            with st.expander("🔎 ChatGPT에게 전달될 프롬프트 미리보기"):
+                preview_kw = kw.strip() if kw.strip() else "{입력한 키워드}"
+                st.code(make_roleplay_prompt(preview_kw), language="text")
+            return kw
+
+        if uploaded is not None:
+            # 사진(왼쪽 큰 화면) + 키워드 입력(오른쪽 고정 패널)
+            pcol, wcol = st.columns([3, 2], gap="medium")
+            with pcol:
+                st.image(fixed_bytes, caption="업로드한 교재 사진", use_container_width=True)
+            with wcol:
+                # 이 마커가 있는 열을 CSS가 sticky(화면 고정)로 만들어 줍니다.
+                st.markdown('<div class="kw-sticky-marker"></div>', unsafe_allow_html=True)
+                write_pane()
+        else:
+            write_pane()
 
         st.divider()
 
