@@ -14,14 +14,44 @@
 #  ※ API Key 불필요. 실제 AI 대화는 버튼으로 무료 ChatGPT 웹사이트로 이동(딥링크).
 # =============================================================================
 
+import io
 import os
 import urllib.parse
 
 import streamlit as st
+from PIL import Image, ImageOps
 
 import storage  # 저장 백엔드 (로컬 SQLite / 클라우드 Supabase 자동 전환)
 
 CHATGPT_BASE_URL = "https://chatgpt.com/"  # 무료 ChatGPT 웹사이트
+
+
+def correct_orientation(file_bytes: bytes, file_name: str):
+    """
+    아이폰/아이패드 사진의 회전 정보(EXIF)를 실제 픽셀에 적용해 바로 세운다.
+    보정된 (이미지 바이트, 저장용 파일명)을 반환한다.
+    문제가 생기면 원본을 그대로 돌려준다.
+    """
+    try:
+        img = Image.open(io.BytesIO(file_bytes))
+        img = ImageOps.exif_transpose(img)  # EXIF 방향 정보를 픽셀에 반영
+
+        ext = os.path.splitext(file_name)[1].lower()
+        if ext in (".jpg", ".jpeg"):
+            fmt, out_ext = "JPEG", ".jpg"
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+        elif ext == ".webp":
+            fmt, out_ext = "WEBP", ".webp"
+        else:
+            fmt, out_ext = "PNG", ".png"
+
+        buf = io.BytesIO()
+        img.save(buf, format=fmt)
+        base = os.path.splitext(file_name)[0]
+        return buf.getvalue(), f"{base}{out_ext}"
+    except Exception:
+        return file_bytes, file_name
 
 
 # -----------------------------------------------------------------------------
@@ -122,8 +152,12 @@ def main():
             placeholder="예) hang out, on second thought, by the way",
         )
 
+        fixed_bytes, fixed_name = (None, None)
         if uploaded is not None:
-            st.image(uploaded, caption="업로드한 교재 사진 미리보기", use_container_width=True)
+            fixed_bytes, fixed_name = correct_orientation(
+                uploaded.getbuffer().tobytes(), uploaded.name
+            )
+            st.image(fixed_bytes, caption="업로드한 교재 사진 미리보기", use_container_width=True)
 
         col_save, col_practice = st.columns(2)
 
@@ -135,9 +169,7 @@ def main():
                     st.warning("핵심 키워드를 입력해 주세요.")
                 else:
                     try:
-                        storage.save_study(
-                            keywords.strip(), uploaded.name, uploaded.getbuffer().tobytes()
-                        )
+                        storage.save_study(keywords.strip(), fixed_name, fixed_bytes)
                         st.success(f"저장 완료! (키워드: {keywords.strip()})")
                     except Exception as e:
                         st.error(f"저장 중 오류가 발생했어요: {e}")
