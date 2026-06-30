@@ -1,0 +1,13 @@
+# 비밀키(절대 GitHub에 올리면 안 됨!)
+.streamlit/secrets.toml
+
+# 로컬 테스트용 데이터 (클라우드에서는 Supabase 사용)
+saved_images/
+study_log.db
+
+# 파이썬 캐시
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store
