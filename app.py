@@ -116,6 +116,91 @@ def show_image(src: str, **kwargs):
 
 
 # -----------------------------------------------------------------------------
+# 학습 기록 상세보기 + 수정 (전체 화면 팝업)
+# -----------------------------------------------------------------------------
+def render_detail(rec: dict):
+    """선택한 학습 기록을 크게 보여주고, 키워드/사진을 수정·삭제할 수 있게 한다."""
+    rid = rec["id"]
+
+    show_image(rec["image_src"], use_container_width=True)
+    st.caption(f"📅 저장일: {rec['created_at']}")
+
+    new_keywords = st.text_input(
+        "핵심 키워드 (수정 가능)",
+        value=rec["keywords"],
+        key=f"edit_kw_{rid}",
+    )
+
+    replace = st.file_uploader(
+        "사진 교체 (선택 사항 — 새 사진을 올리면 교체됩니다)",
+        type=["jpg", "jpeg", "png", "webp"],
+        key=f"edit_img_{rid}",
+    )
+
+    link_button(
+        "🔁 이 기록으로 ChatGPT 복습하기",
+        build_chatgpt_url(make_quiz_prompt(new_keywords or rec["keywords"])),
+    )
+
+    st.divider()
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        if st.button("💾 수정 저장", use_container_width=True, key=f"save_edit_{rid}"):
+            if not new_keywords.strip():
+                st.warning("키워드를 입력해 주세요.")
+            else:
+                try:
+                    if replace is not None:
+                        fb, fn = correct_orientation(replace.getbuffer().tobytes(), replace.name)
+                        storage.update_study(rid, new_keywords.strip(), fn, fb)
+                    else:
+                        storage.update_study(rid, new_keywords.strip())
+                    st.session_state["detail_id"] = None
+                    st.session_state["flash"] = "수정 내용을 저장했어요."
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"수정 중 오류가 발생했어요: {e}")
+
+    with c2:
+        if st.button("🗑️ 삭제", use_container_width=True, key=f"del_{rid}"):
+            st.session_state[f"confirm_del_{rid}"] = True
+
+    with c3:
+        if st.button("닫기", use_container_width=True, key=f"close_{rid}"):
+            st.session_state["detail_id"] = None
+            st.rerun()
+
+    if st.session_state.get(f"confirm_del_{rid}"):
+        st.warning("정말 삭제할까요? 되돌릴 수 없습니다.")
+        d1, d2 = st.columns(2)
+        with d1:
+            if st.button("예, 삭제합니다", use_container_width=True, key=f"del_yes_{rid}"):
+                try:
+                    storage.delete_study(rid)
+                    st.session_state[f"confirm_del_{rid}"] = False
+                    st.session_state["detail_id"] = None
+                    st.session_state["flash"] = "기록을 삭제했어요."
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"삭제 중 오류가 발생했어요: {e}")
+        with d2:
+            if st.button("아니요", use_container_width=True, key=f"del_no_{rid}"):
+                st.session_state[f"confirm_del_{rid}"] = False
+                st.rerun()
+
+
+if hasattr(st, "dialog"):
+    @st.dialog("📖 학습 기록 상세 / 수정", width="large")
+    def open_detail(rec: dict):
+        render_detail(rec)
+else:
+    def open_detail(rec: dict):
+        with st.container(border=True):
+            render_detail(rec)
+
+
+# -----------------------------------------------------------------------------
 # 화면 구성
 # -----------------------------------------------------------------------------
 def main():
@@ -127,12 +212,21 @@ def main():
 
     storage.init_storage()
 
+    st.session_state.setdefault("form_round", 0)   # 저장 후 입력칸 초기화용
+    st.session_state.setdefault("detail_id", None)  # 상세보기 중인 기록 id
+    st.session_state.setdefault("flash", None)      # 한 번 보여줄 안내 메시지
+
     st.title("🗣️ AI 시각 연상 영어 회화 보조 프로그램")
     st.caption(
         "교재 사진과 키워드를 저장하고, 무료 ChatGPT 웹사이트와 연동해 실전 회화·복습을 이어가세요. "
         "(API Key 불필요 · 딥링크 방식)"
     )
     st.caption(f"🗄️ 현재 저장 방식: **{storage.backend_name()}**")
+
+    if st.session_state.get("flash"):
+        st.success(st.session_state["flash"])
+        st.session_state["flash"] = None
+
     st.divider()
 
     left, right = st.columns([2, 1], gap="large")
@@ -143,13 +237,17 @@ def main():
     with left:
         st.subheader("📷 오늘의 학습 등록 & 실전 연습")
 
+        # 저장할 때마다 form_round가 1씩 늘어나며, 위젯 key가 바뀌어 입력칸이 깨끗하게 초기화됩니다.
+        rnd = st.session_state["form_round"]
         uploaded = st.file_uploader(
             "교재 사진을 업로드하세요 (촬영 또는 사진 보관함에서 선택)",
             type=["jpg", "jpeg", "png", "webp"],
+            key=f"uploader_{rnd}",
         )
         keywords = st.text_input(
             "외우고 싶은 핵심 숙어/단어 키워드 (2~3개, 쉼표로 구분)",
             placeholder="예) hang out, on second thought, by the way",
+            key=f"keywords_{rnd}",
         )
 
         fixed_bytes, fixed_name = (None, None)
@@ -170,7 +268,12 @@ def main():
                 else:
                     try:
                         storage.save_study(keywords.strip(), fixed_name, fixed_bytes)
-                        st.success(f"저장 완료! (키워드: {keywords.strip()})")
+                        # 입력칸을 비우고 다음 학습을 바로 등록할 수 있도록 새 폼으로 전환
+                        st.session_state["form_round"] += 1
+                        st.session_state["flash"] = (
+                            f"저장 완료! ‘{keywords.strip()}’ — 이어서 다음 학습을 등록하세요."
+                        )
+                        st.rerun()
                     except Exception as e:
                         st.error(f"저장 중 오류가 발생했어요: {e}")
 
@@ -195,6 +298,7 @@ def main():
         st.divider()
 
         st.subheader("📚 그동안 누적된 학습 기록")
+        st.caption("사진을 누르면 크게 보면서 키워드·사진을 수정하거나 삭제할 수 있어요.")
         try:
             records = storage.fetch_all_records()
         except Exception as e:
@@ -205,18 +309,34 @@ def main():
             st.info("아직 저장된 학습 기록이 없습니다. 위에서 첫 기록을 등록해 보세요!")
         else:
             st.write(f"총 **{len(records)}건**의 기록이 저장되어 있습니다.")
-            for rec in records:
-                with st.expander(f"🗓️ {rec['created_at']}  ·  {rec['keywords']}"):
-                    c1, c2 = st.columns([1, 2])
-                    with c1:
+            cols_per_row = 3
+            for i in range(0, len(records), cols_per_row):
+                row = records[i : i + cols_per_row]
+                cols = st.columns(cols_per_row)
+                for col, rec in zip(cols, row):
+                    with col:
                         show_image(rec["image_src"], use_container_width=True)
-                    with c2:
-                        st.write(f"**키워드:** {rec['keywords']}")
-                        st.write(f"**저장일:** {rec['created_at']}")
-                        link_button(
-                            "🔁 이 기록으로 ChatGPT 복습하기",
-                            build_chatgpt_url(make_quiz_prompt(rec["keywords"])),
-                        )
+                        short_kw = rec["keywords"]
+                        if len(short_kw) > 16:
+                            short_kw = short_kw[:16] + "…"
+                        if st.button(
+                            f"📝 {short_kw}",
+                            use_container_width=True,
+                            key=f"open_{rec['id']}",
+                            help=f"{rec['created_at']} · {rec['keywords']}",
+                        ):
+                            st.session_state["detail_id"] = rec["id"]
+                            st.rerun()
+
+            # 선택된 기록이 있으면 상세보기/수정 팝업을 띄운다.
+            if st.session_state.get("detail_id") is not None:
+                selected = next(
+                    (r for r in records if r["id"] == st.session_state["detail_id"]), None
+                )
+                if selected is not None:
+                    open_detail(selected)
+                else:
+                    st.session_state["detail_id"] = None
 
     # =========================================================================
     # [우측] 기능 3 : 망각 곡선 기반 랜덤 복습 퀴즈

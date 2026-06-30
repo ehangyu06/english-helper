@@ -96,36 +96,88 @@ def init_storage():
 # -----------------------------------------------------------------------------
 # 저장 (사진 업로드 + 기록)
 # -----------------------------------------------------------------------------
-def save_study(keywords: str, file_name: str, file_bytes: bytes):
-    """학습 기록 한 건을 저장한다. (사진 파일 + 키워드 + 날짜)"""
+def _store_image(file_name: str, file_bytes: bytes) -> str:
+    """사진을 저장하고, DB에 기록할 경로(로컬 경로 또는 공개 URL)를 돌려준다."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_name = f"{timestamp}_{file_name}"
 
     if use_supabase():
         client = _client()
         mime = mimetypes.guess_type(file_name)[0] or "image/jpeg"
-        # 1) 사진을 Supabase Storage 버킷에 업로드
         client.storage.from_(BUCKET).upload(
             path=safe_name,
             file=file_bytes,
             file_options={"content-type": mime, "upsert": "true"},
         )
-        # 2) 공개 URL 받아서 DB에 경로로 저장
-        public_url = client.storage.from_(BUCKET).get_public_url(safe_name)
-        client.table(TABLE).insert(
-            {"keywords": keywords, "image_path": public_url}
-        ).execute()
+        return client.storage.from_(BUCKET).get_public_url(safe_name)
     else:
         os.makedirs(IMAGE_DIR, exist_ok=True)
         save_path = os.path.join(IMAGE_DIR, safe_name)
         with open(save_path, "wb") as f:
             f.write(file_bytes)
+        return save_path
+
+
+def save_study(keywords: str, file_name: str, file_bytes: bytes):
+    """학습 기록 한 건을 저장한다. (사진 파일 + 키워드 + 날짜)"""
+    image_path = _store_image(file_name, file_bytes)
+
+    if use_supabase():
+        client = _client()
+        client.table(TABLE).insert(
+            {"keywords": keywords, "image_path": image_path}
+        ).execute()
+    else:
         conn = sqlite3.connect(DB_PATH)
         try:
             conn.execute(
                 "INSERT INTO study_records (created_at, keywords, image_path) VALUES (?, ?, ?)",
-                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), keywords, save_path),
+                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), keywords, image_path),
             )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def update_study(record_id, keywords: str, file_name: str = None, file_bytes: bytes = None):
+    """기존 학습 기록을 수정한다. (키워드는 항상, 사진은 새로 올린 경우에만 교체)"""
+    new_path = None
+    if file_name is not None and file_bytes is not None:
+        new_path = _store_image(file_name, file_bytes)
+
+    if use_supabase():
+        client = _client()
+        payload = {"keywords": keywords}
+        if new_path is not None:
+            payload["image_path"] = new_path
+        client.table(TABLE).update(payload).eq("id", record_id).execute()
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            if new_path is not None:
+                conn.execute(
+                    "UPDATE study_records SET keywords = ?, image_path = ? WHERE id = ?",
+                    (keywords, new_path, record_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE study_records SET keywords = ? WHERE id = ?",
+                    (keywords, record_id),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def delete_study(record_id):
+    """학습 기록 한 건을 삭제한다. (DB 행 삭제)"""
+    if use_supabase():
+        client = _client()
+        client.table(TABLE).delete().eq("id", record_id).execute()
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            conn.execute("DELETE FROM study_records WHERE id = ?", (record_id,))
             conn.commit()
         finally:
             conn.close()
