@@ -105,28 +105,62 @@ def split_keywords(keywords: str) -> list:
     return parts + [""] * (MAX_KEYWORDS - len(parts))
 
 
+def _keyword_values_from_state(key_prefix: str, initial_values: list = None) -> list:
+    """세션 상태(또는 초기값)에서 숙어 칸 값을 읽는다."""
+    vals = []
+    for i in range(MAX_KEYWORDS):
+        k = f"{key_prefix}_{i}"
+        if k in st.session_state:
+            vals.append(st.session_state.get(k) or "")
+        elif initial_values and i < len(initial_values):
+            vals.append(initial_values[i] or "")
+        else:
+            vals.append("")
+    return vals
+
+
+def _visible_keyword_count(vals: list) -> int:
+    """입력된 칸 다음 칸까지 보여 준다. (최소 1칸, 최대 10칸)"""
+    visible = 1
+    for i in range(MAX_KEYWORDS):
+        if str(vals[i]).strip():
+            visible = min(i + 2, MAX_KEYWORDS)
+        else:
+            break
+    return visible
+
+
+def _reveal_next_keyword_slot(key_prefix: str, index: int):
+    """마지막 보이는 칸에 내용이 들어가면 다음 칸을 보이게 한다."""
+    key = f"{key_prefix}_{index}"
+    if str(st.session_state.get(key, "")).strip():
+        st.rerun()
+
+
 def render_keyword_inputs(key_prefix: str, initial_values: list = None) -> list:
-    """핵심 숙어/단어 입력 칸 10개. Enter 로 다음 칸 이동."""
-    values = (initial_values or [""] * MAX_KEYWORDS)[:MAX_KEYWORDS]
-    if len(values) < MAX_KEYWORDS:
-        values = values + [""] * (MAX_KEYWORDS - len(values))
+    """핵심 숙어/단어 — 입력할 때마다 다음 칸이 나타난다 (최대 10개)."""
+    vals = _keyword_values_from_state(key_prefix, initial_values)
+    visible = _visible_keyword_count(vals)
 
     st.markdown('<div class="kw-panel-marker"></div>', unsafe_allow_html=True)
-    st.caption("외우고 싶은 핵심 숙어/단어 (한 칸에 하나 · Enter 로 다음 칸)")
+    st.caption("외우고 싶은 핵심 숙어/단어 (한 칸에 하나 · 입력하면 다음 칸이 나타남)")
 
-    slots = []
-    for i in range(MAX_KEYWORDS):
-        slots.append(
-            st.text_input(
-                f"{i + 1}",
-                value=values[i],
-                placeholder=f"숙어/단어 {i + 1}",
-                key=f"{key_prefix}_{i}",
-            )
-        )
+    for i in range(visible):
+        key = f"{key_prefix}_{i}"
+        kwargs = {
+            "label": f"{i + 1}",
+            "placeholder": f"숙어/단어 {i + 1}",
+            "key": key,
+        }
+        if key not in st.session_state and initial_values and i < len(initial_values):
+            kwargs["value"] = initial_values[i]
+        if i == visible - 1 and visible < MAX_KEYWORDS:
+            kwargs["on_change"] = lambda idx=i, p=key_prefix: _reveal_next_keyword_slot(p, idx)
+
+        st.text_input(**kwargs)
 
     inject_keyword_enter_navigation()
-    return slots
+    return _keyword_values_from_state(key_prefix, initial_values)
 
 
 def inject_keyword_enter_navigation():
