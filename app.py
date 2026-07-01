@@ -258,6 +258,22 @@ def require_auth() -> bool:
     return False
 
 
+def render_logout_control():
+    """우측 상단 작은 잠금 메뉴 — 필요할 때만 로그아웃."""
+    if not auth_enabled():
+        return
+    _, action_col = st.columns([11, 1])
+    with action_col:
+        if hasattr(st, "popover"):
+            with st.popover("🔒", help="계정"):
+                if st.button("로그아웃", key="logout_btn", use_container_width=True):
+                    st.session_state["authenticated"] = False
+                    st.rerun()
+        elif st.button("로그아웃", key="logout_btn_compact", help="로그아웃"):
+            st.session_state["authenticated"] = False
+            st.rerun()
+
+
 # -----------------------------------------------------------------------------
 # 화면 구성
 # -----------------------------------------------------------------------------
@@ -266,6 +282,7 @@ def main():
         page_title="AI 시각 연상 영어 회화 보조 프로그램",
         page_icon="🗣️",
         layout="wide",
+        initial_sidebar_state="collapsed",
     )
 
     storage.init_storage()
@@ -273,12 +290,7 @@ def main():
     if not require_auth():
         return
 
-    if auth_enabled():
-        with st.sidebar:
-            st.caption("🔒 비밀번호로 보호 중")
-            if st.button("로그아웃", use_container_width=True):
-                st.session_state["authenticated"] = False
-                st.rerun()
+    render_logout_control()
 
     st.session_state.setdefault("form_round", 0)   # 저장 후 입력칸 초기화용
     st.session_state.setdefault("detail_id", None)  # 상세보기 중인 기록 id
@@ -310,6 +322,12 @@ def main():
           }
         }
         .kw-sticky-marker { display: none; }
+        /* 우측 상단 잠금(로그아웃) 버튼 — 작게 */
+        div[data-testid="stPopover"] > button {
+            min-height: 2rem;
+            padding: 0.2rem 0.55rem;
+            font-size: 0.95rem;
+        }
         </style>
         """,
         unsafe_allow_html=True,
