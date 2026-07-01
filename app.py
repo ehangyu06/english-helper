@@ -14,16 +14,19 @@
 #  ※ API Key 불필요. 실제 AI 대화는 버튼으로 무료 ChatGPT 웹사이트로 이동(딥링크).
 # =============================================================================
 
+import base64
 import io
 import os
 import urllib.parse
 
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image, ImageOps
 
 import study_storage as storage  # 저장 백엔드 (로컬 SQLite / 클라우드 Supabase 자동 전환)
 
 CHATGPT_BASE_URL = "https://chatgpt.com/"  # 무료 ChatGPT 웹사이트
+MAX_KEYWORDS = 10
 
 
 def prepare_upload_image(file_bytes: bytes, file_name: str):
@@ -91,6 +94,90 @@ def make_quiz_prompt(keywords: str) -> str:
 # -----------------------------------------------------------------------------
 # UI 헬퍼
 # -----------------------------------------------------------------------------
+def join_keywords(keyword_slots: list) -> str:
+    """입력 칸 목록에서 비어 있지 않은 키워드만 쉼표로 이어 붙인다."""
+    return ", ".join(k.strip() for k in keyword_slots if k and str(k).strip())
+
+
+def split_keywords(keywords: str) -> list:
+    """저장된 키워드 문자열을 최대 10칸 목록으로 나눈다."""
+    parts = [p.strip() for p in (keywords or "").split(",") if p.strip()]
+    return parts + [""] * (MAX_KEYWORDS - len(parts))
+
+
+def render_keyword_inputs(key_prefix: str, initial_values: list = None) -> list:
+    """핵심 숙어/단어 입력 칸 10개. Enter 로 다음 칸 이동."""
+    values = (initial_values or [""] * MAX_KEYWORDS)[:MAX_KEYWORDS]
+    if len(values) < MAX_KEYWORDS:
+        values = values + [""] * (MAX_KEYWORDS - len(values))
+
+    st.markdown('<div class="kw-panel-marker"></div>', unsafe_allow_html=True)
+    st.caption("외우고 싶은 핵심 숙어/단어 (한 칸에 하나 · Enter 로 다음 칸)")
+
+    slots = []
+    for i in range(MAX_KEYWORDS):
+        slots.append(
+            st.text_input(
+                f"{i + 1}",
+                value=values[i],
+                placeholder=f"숙어/단어 {i + 1}",
+                key=f"{key_prefix}_{i}",
+            )
+        )
+
+    inject_keyword_enter_navigation()
+    return slots
+
+
+def inject_keyword_enter_navigation():
+    """숙어 입력 칸에서 Enter 를 누르면 다음 칸으로 포커스를 옮긴다."""
+    components.html(
+        """
+        <script>
+        (function () {
+            const doc = window.parent.document;
+            const attach = () => {
+                const inputs = [...doc.querySelectorAll('section.main input[type="text"]')]
+                    .filter((el) => (el.placeholder || "").includes("숙어/단어"));
+                inputs.forEach((inp, idx) => {
+                    if (inp.dataset.kwNav) return;
+                    inp.dataset.kwNav = "1";
+                    inp.addEventListener("keydown", (e) => {
+                        if (e.key === "Enter") {
+                            e.preventDefault();
+                            if (inp.value.trim() && idx + 1 < inputs.length) {
+                                inputs[idx + 1].focus();
+                            }
+                        }
+                    });
+                });
+            };
+            attach();
+            setTimeout(attach, 400);
+            setTimeout(attach, 1200);
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
+def show_large_upload_image(image_bytes: bytes, file_name: str):
+    """업로드 직후 교재 사진을 크게 보여준다."""
+    ext = os.path.splitext(file_name)[1].lower()
+    if ext in (".jpg", ".jpeg"):
+        mime = "image/jpeg"
+    elif ext == ".webp":
+        mime = "image/webp"
+    else:
+        mime = "image/png"
+    b64 = base64.b64encode(image_bytes).decode()
+    st.markdown(
+        f'<div class="upload-preview"><img src="data:{mime};base64,{b64}" alt="업로드한 교재 사진" /></div>',
+        unsafe_allow_html=True,
+    )
+
+
 def link_button(label: str, url: str):
     """새 창으로 열리는 링크 버튼 (구버전 Streamlit이면 HTML로 대체)."""
     if hasattr(st, "link_button"):
@@ -147,11 +234,8 @@ def render_detail(rec: dict):
         show_image(rec["image_path"], use_container_width=True)
     st.caption(f"📅 저장일: {rec['created_at']}")
 
-    new_keywords = st.text_input(
-        "핵심 키워드 (수정 가능)",
-        value=rec["keywords"],
-        key=f"edit_kw_{rid}",
-    )
+    new_kw_slots = render_keyword_inputs(f"edit_kw_{rid}", split_keywords(rec["keywords"]))
+    new_keywords = join_keywords(new_kw_slots)
     replace = st.file_uploader(
         "사진 교체 (선택 사항 — 새 사진을 올리면 교체됩니다)",
         type=["jpg", "jpeg", "png", "webp"],
@@ -322,6 +406,26 @@ def main():
           }
         }
         .kw-sticky-marker { display: none; }
+        /* 업로드 사진 — 왼쪽을 크게 */
+        .upload-preview img {
+            max-height: 78vh;
+            width: 100%;
+            object-fit: contain;
+            display: block;
+            margin: 0 auto;
+            border-radius: 8px;
+        }
+        /* 숙어 입력 칸 — 파란 테두리 */
+        div[data-testid="stVerticalBlock"]:has(.kw-panel-marker) input[type="text"] {
+            border: 2px solid #2563eb !important;
+            background-color: #f8fafc !important;
+            border-radius: 6px !important;
+        }
+        div[data-testid="stVerticalBlock"]:has(.kw-panel-marker) label[data-testid="stWidgetLabel"] p {
+            font-weight: 700;
+            color: #2563eb;
+            min-width: 1.2rem;
+        }
         /* 우측 상단 잠금(로그아웃) 버튼 — 작게 */
         div[data-testid="stPopover"] > button {
             min-height: 2rem;
@@ -359,32 +463,28 @@ def main():
 
         def write_pane():
             """키워드 입력 + 저장/연습 버튼 묶음. (사진 옆 고정 패널로도, 단독으로도 사용)"""
-            kw = st.text_input(
-                "외우고 싶은 핵심 숙어/단어 키워드 (2~3개, 쉼표로 구분)",
-                placeholder="예) hang out, on second thought, by the way",
-                key=f"keywords_{rnd}",
-            )
+            kw_slots = render_keyword_inputs(f"kw_{rnd}")
+            kw = join_keywords(kw_slots)
             if st.button("💾 학습 기록 저장하기", use_container_width=True, key=f"save_{rnd}"):
                 if uploaded is None:
                     st.warning("먼저 교재 사진을 업로드해 주세요.")
-                elif not kw.strip():
-                    st.warning("핵심 키워드를 입력해 주세요.")
+                elif not kw:
+                    st.warning("핵심 키워드를 최소 1개 이상 입력해 주세요.")
                 else:
                     try:
-                        storage.save_study(kw.strip(), fixed_name, fixed_bytes)
-                        # 입력칸을 비우고 다음 학습을 바로 등록할 수 있도록 새 폼으로 전환
+                        storage.save_study(kw, fixed_name, fixed_bytes)
                         st.session_state["form_round"] += 1
                         st.session_state["flash"] = (
-                            f"저장 완료! ‘{kw.strip()}’ — 이어서 다음 학습을 등록하세요."
+                            f"저장 완료! ‘{kw}’ — 이어서 다음 학습을 등록하세요."
                         )
                         st.rerun()
                     except Exception as e:
                         st.error(f"저장 중 오류가 발생했어요: {e}")
 
-            if kw.strip():
+            if kw:
                 link_button(
                     "💬 ChatGPT와 실전 연습하기",
-                    build_chatgpt_url(make_roleplay_prompt(kw.strip())),
+                    build_chatgpt_url(make_roleplay_prompt(kw)),
                 )
             else:
                 st.button(
@@ -396,17 +496,16 @@ def main():
                 )
 
             with st.expander("🔎 ChatGPT에게 전달될 프롬프트 미리보기"):
-                preview_kw = kw.strip() if kw.strip() else "{입력한 키워드}"
+                preview_kw = kw if kw else "{입력한 키워드}"
                 st.code(make_roleplay_prompt(preview_kw), language="text")
             return kw
 
         if uploaded is not None:
-            # 사진(왼쪽 큰 화면) + 키워드 입력(오른쪽 고정 패널)
-            pcol, wcol = st.columns([3, 2], gap="medium")
+            # 사진(왼쪽 넓게) + 숙어 입력(오른쪽 좁게)
+            pcol, wcol = st.columns([5, 2], gap="small")
             with pcol:
-                st.image(fixed_bytes, caption="업로드한 교재 사진", use_container_width=True)
+                show_large_upload_image(fixed_bytes, fixed_name)
             with wcol:
-                # 이 마커가 있는 열을 CSS가 sticky(화면 고정)로 만들어 줍니다.
                 st.markdown('<div class="kw-sticky-marker"></div>', unsafe_allow_html=True)
                 write_pane()
         else:
