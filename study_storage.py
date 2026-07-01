@@ -26,7 +26,7 @@ import streamlit as st
 DB_PATH = "study_log.db"
 IMAGE_DIR = "saved_images"
 
-# ----- Supabase 저장 설정 -----
+# study_storage v2 — Streamlit Cloud 모듈 캐시 갱신용
 BUCKET = "study-images"          # Supabase Storage 버킷 이름
 TABLE = "study_records"          # Supabase 테이블 이름
 DEFAULT_SIGNED_URL_EXPIRES = 3600  # Signed URL 유효 시간(초). 기본 1시간

@@ -17,7 +17,9 @@
 import base64
 import io
 import os
+import random
 import urllib.parse
+from datetime import datetime, timedelta
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -27,6 +29,7 @@ import study_storage as storage  # 저장 백엔드 (로컬 SQLite / 클라우�
 
 CHATGPT_BASE_URL = "https://chatgpt.com/"  # 무료 ChatGPT 웹사이트
 MAX_KEYWORDS = 10
+RECENT_REVIEW_DAYS = 14
 
 
 def prepare_upload_image(file_bytes: bytes, file_name: str):
@@ -157,6 +160,33 @@ def keywords_from_records(records: list) -> str:
                 seen.add(word.lower())
                 parts.append(word)
     return ", ".join(parts)
+
+
+def fetch_today_records():
+    """오늘 저장한 학습 기록."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    return [
+        r
+        for r in storage.fetch_all_records()
+        if str(r.get("created_at", "")).startswith(today)
+    ]
+
+
+def fetch_random_recent_record(days: int = RECENT_REVIEW_DAYS):
+    """최근 days 일 이내 학습 기록 중 무작위 1건."""
+    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    recent = [
+        r
+        for r in storage.fetch_all_records()
+        if str(r.get("created_at", ""))[:10] >= cutoff
+    ]
+    return random.choice(recent) if recent else None
+
+
+def fetch_random_record():
+    """전체 학습 기록 중 무작위 1건."""
+    records = storage.fetch_all_records()
+    return random.choice(records) if records else None
 
 
 # -----------------------------------------------------------------------------
@@ -691,7 +721,7 @@ def main():
 
         st.markdown("**① 오늘 배운 표현**")
         try:
-            today_records = storage.fetch_today_records()
+            today_records = fetch_today_records()
         except Exception:
             today_records = []
 
@@ -714,7 +744,7 @@ def main():
             title="**② 최근 2주 복습**",
             caption="최근 2주 동안 공부한 내용 중 무작위로 골라 퀴즈를 냅니다.",
             session_key="quiz_record_recent",
-            fetch_fn=storage.fetch_random_recent_record,
+            fetch_fn=fetch_random_recent_record,
             pick_button_key="pick_recent_quiz",
             quiz_button_label="🧠 최근 2주 빈칸 퀴즈 풀기",
             empty_message=(
@@ -730,7 +760,7 @@ def main():
             title="**③ 전체 무작위 복습**",
             caption="지금까지 공부한 모든 기록 중 무작위로 골라 퀴즈를 냅니다.",
             session_key="quiz_record_all",
-            fetch_fn=storage.fetch_random_record,
+            fetch_fn=fetch_random_record,
             pick_button_key="pick_all_quiz",
             quiz_button_label="🧠 전체 무작위 빈칸 퀴즈 풀기",
             empty_message="아직 저장된 학습 기록이 없습니다. 왼쪽에서 첫 기록을 등록해 보세요!",
