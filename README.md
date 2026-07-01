@@ -129,7 +129,7 @@ password = "본인만-아는-강한-비밀번호"
 ```
 영어회화/
 ├── app.py                          # 메인 화면 (UI)
-├── storage.py                      # 저장 백엔드 (로컬/Supabase 자동 전환)
+├── study_storage.py                # 저장 백엔드 (로컬/Supabase 자동 전환)
 ├── requirements.txt                # 설치할 라이브러리
 ├── README.md                       # 사용 설명서 (이 파일)
 ├── .gitignore                      # GitHub에 안 올릴 파일 목록

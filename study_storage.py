@@ -1,5 +1,5 @@
 # =============================================================================
-#  storage.py  -  데이터 저장 백엔드 (로컬 SQLite  /  클라우드 Supabase 자동 전환)
+#  study_storage.py  -  데이터 저장 백엔드 (로컬 SQLite  /  클라우드 Supabase 자동 전환)
 # -----------------------------------------------------------------------------
 #  - 클라우드(Streamlit Cloud)에 Supabase 비밀키(secrets)가 설정되어 있으면
 #    Supabase(Postgres + Storage)에 사진과 기록을 "영구 보존" 합니다.
@@ -67,26 +67,6 @@ def backend_name() -> str:
     if use_supabase():
         return "클라우드(Supabase) · Private + Signed URL"
     return "로컬(SQLite) · 이 컴퓨터에만 저장"
-
-
-# -----------------------------------------------------------------------------
-# 앱 비밀번호 (선택)
-# -----------------------------------------------------------------------------
-def auth_password() -> str:
-    """secrets [auth] password 가 있으면 반환. 없으면 빈 문자열(잠금 해제)."""
-    try:
-        cfg = st.secrets.get("auth", None)
-        if not cfg:
-            return ""
-        return str(cfg.get("password", "") or "").strip()
-    except Exception:
-        return ""
-
-
-def auth_enabled() -> bool:
-    """앱 비밀번호 잠금이 켜져 있는지."""
-    return bool(auth_password())
-
 
 # -----------------------------------------------------------------------------
 # 공통 유틸

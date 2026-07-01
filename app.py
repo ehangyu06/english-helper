@@ -21,7 +21,7 @@ import urllib.parse
 import streamlit as st
 from PIL import Image, ImageOps
 
-import storage  # 저장 백엔드 (로컬 SQLite / 클라우드 Supabase 자동 전환)
+import study_storage as storage  # 저장 백엔드 (로컬 SQLite / 클라우드 Supabase 자동 전환)
 
 CHATGPT_BASE_URL = "https://chatgpt.com/"  # 무료 ChatGPT 웹사이트
 
@@ -223,9 +223,25 @@ else:
 # -----------------------------------------------------------------------------
 # 앱 비밀번호 잠금 (secrets [auth] password)
 # -----------------------------------------------------------------------------
+def auth_password() -> str:
+    """secrets [auth] password 가 있으면 반환. 없으면 빈 문자열(잠금 해제)."""
+    try:
+        cfg = st.secrets.get("auth", None)
+        if not cfg:
+            return ""
+        return str(cfg.get("password", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def auth_enabled() -> bool:
+    """앱 비밀번호 잠금이 켜져 있는지."""
+    return bool(auth_password())
+
+
 def require_auth() -> bool:
     """비밀번호가 설정되어 있으면 로그인 화면을 보여준다. 통과 시 True."""
-    if not storage.auth_enabled():
+    if not auth_enabled():
         return True
     if st.session_state.get("authenticated"):
         return True
@@ -234,7 +250,7 @@ def require_auth() -> bool:
     st.caption("이 앱은 비밀번호로 보호되어 있습니다. 본인만 접속할 수 있어요.")
     entered = st.text_input("비밀번호", type="password", key="login_password")
     if st.button("입장", use_container_width=True, type="primary"):
-        if entered == storage.auth_password():
+        if entered == auth_password():
             st.session_state["authenticated"] = True
             st.rerun()
         else:
@@ -257,7 +273,7 @@ def main():
     if not require_auth():
         return
 
-    if storage.auth_enabled():
+    if auth_enabled():
         with st.sidebar:
             st.caption("🔒 비밀번호로 보호 중")
             if st.button("로그아웃", use_container_width=True):
