@@ -80,7 +80,7 @@ def build_chatgpt_url(prompt_text: str) -> str:
     return f"{CHATGPT_BASE_URL}?q={urllib.parse.quote(compact)}"
 
 
-def chatgpt_prompt_button(label: str, prompt: str):
+def chatgpt_prompt_button(label: str, prompt: str, show_caption: bool = True):
     """
     미리보기와 동일한 프롬프트를 클립보드에 복사하고 ChatGPT를 연다.
     (아이패드·긴 프롬프트에서 URL만으로는 내용이 잘리는 문제 방지)
@@ -118,7 +118,11 @@ def chatgpt_prompt_button(label: str, prompt: str):
         """,
         height=52,
     )
-    st.caption("💡 ChatGPT 입력창 내용이 짧으면 **붙여넣기**(길게 누르기) 하세요. 미리보기와 동일한 내용이 복사됩니다.")
+    if show_caption:
+        st.caption(
+            "💡 ChatGPT 입력창 내용이 짧으면 **붙여넣기**(길게 누르기) 하세요. "
+            "미리보기와 동일한 내용이 복사됩니다."
+        )
 
 
 def make_roleplay_prompt(keywords: str) -> str:
@@ -186,9 +190,6 @@ def render_random_quiz_block(
     st.markdown(title)
     st.caption(caption)
 
-    if st.button("🎲 다른 문제 뽑기", use_container_width=True, key=pick_button_key):
-        st.session_state[session_key] = fetch_fn()
-
     if session_key not in st.session_state:
         try:
             st.session_state[session_key] = fetch_fn()
@@ -208,7 +209,18 @@ def render_random_quiz_block(
             st.markdown(f"- **{item['date']}** · `{item['keyword']}`")
         st.caption(f"총 {len(quiz['items'])}개 · 여러 날짜에서 1~2개씩 무작위 선택")
         prompt = make_mixed_quiz_prompt(quiz, recent_only)
-        chatgpt_prompt_button(quiz_button_label, prompt)
+        quiz_col, new_col = st.columns([3, 2])
+        with quiz_col:
+            chatgpt_prompt_button(quiz_button_label, prompt, show_caption=False)
+        with new_col:
+            st.markdown('<div style="height:0.3rem"></div>', unsafe_allow_html=True)
+            if st.button("🔄 새롭게 하기", use_container_width=True, key=pick_button_key):
+                st.session_state[session_key] = fetch_fn()
+                st.rerun()
+        st.caption(
+            "💡 ChatGPT 입력창 내용이 짧으면 **붙여넣기**(길게 누르기) 하세요. "
+            "문제를 다 풀었으면 **새롭게 하기**로 다른 표현을 뽑으세요."
+        )
         with st.expander("🔎 프롬프트 미리보기"):
             st.code(prompt, language="text")
 
