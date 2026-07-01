@@ -16,6 +16,7 @@
 
 import base64
 import io
+import json
 import os
 import random
 import urllib.parse
@@ -74,8 +75,50 @@ def prepare_upload_image(file_bytes: bytes, file_name: str):
 # ChatGPT 딥링크 / 프롬프트
 # -----------------------------------------------------------------------------
 def build_chatgpt_url(prompt_text: str) -> str:
-    """프롬프트를 URL 인코딩하여 ChatGPT 입력창에 자동으로 채워지는 링크를 만든다."""
-    return f"{CHATGPT_BASE_URL}?q={urllib.parse.quote(prompt_text)}"
+    """프롬프트를 URL 인코딩하여 ChatGPT 입력창에 채운다. (줄바꿈은 한 줄로 합침)"""
+    compact = " ".join(prompt_text.split())
+    return f"{CHATGPT_BASE_URL}?q={urllib.parse.quote(compact)}"
+
+
+def chatgpt_prompt_button(label: str, prompt: str):
+    """
+    미리보기와 동일한 프롬프트를 클립보드에 복사하고 ChatGPT를 연다.
+    (아이패드·긴 프롬프트에서 URL만으로는 내용이 잘리는 문제 방지)
+    """
+    url = build_chatgpt_url(prompt)
+    components.html(
+        f"""
+        <div style="margin:0.25rem 0">
+          <button id="cgptBtn" type="button" style="width:100%;padding:0.65rem 1rem;
+            background:#10a37f;color:#fff;border:none;border-radius:0.5rem;
+            font-weight:600;font-size:0.95rem;cursor:pointer;">
+            {label}
+          </button>
+        </div>
+        <script>
+        (function () {{
+            const text = {json.dumps(prompt)};
+            const url = {json.dumps(url)};
+            document.getElementById('cgptBtn').onclick = function () {{
+                const doc = window.parent.document;
+                try {{
+                    const ta = doc.createElement('textarea');
+                    ta.value = text;
+                    ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+                    doc.body.appendChild(ta);
+                    ta.focus();
+                    ta.select();
+                    doc.execCommand('copy');
+                    doc.body.removeChild(ta);
+                }} catch (e) {{}}
+                window.open(url, '_blank');
+            }};
+        }})();
+        </script>
+        """,
+        height=52,
+    )
+    st.caption("💡 ChatGPT 입력창 내용이 짧으면 **붙여넣기**(길게 누르기) 하세요. 미리보기와 동일한 내용이 복사됩니다.")
 
 
 def make_roleplay_prompt(keywords: str) -> str:
@@ -153,6 +196,9 @@ def render_random_quiz_block(
             st.session_state[session_key] = None
 
     quiz = st.session_state.get(session_key)
+    if quiz is not None and not isinstance(quiz.get("items"), list):
+        st.session_state[session_key] = fetch_fn()
+        quiz = st.session_state.get(session_key)
 
     if quiz is None:
         st.info(empty_message)
@@ -162,7 +208,7 @@ def render_random_quiz_block(
             st.markdown(f"- **{item['date']}** · `{item['keyword']}`")
         st.caption(f"총 {len(quiz['items'])}개 · 여러 날짜에서 1~2개씩 무작위 선택")
         prompt = make_mixed_quiz_prompt(quiz, recent_only)
-        link_button(quiz_button_label, build_chatgpt_url(prompt))
+        chatgpt_prompt_button(quiz_button_label, prompt)
         with st.expander("🔎 프롬프트 미리보기"):
             st.code(prompt, language="text")
 
