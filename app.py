@@ -239,6 +239,26 @@ def show_large_upload_image(image_bytes: bytes, file_name: str):
     )
 
 
+def show_large_detail_image(image_path: str) -> str:
+    """상세/수정 화면용 — 교재 사진을 크게 보여준다. 표시용 URL/경로를 반환."""
+    src = storage.resolve_image_src(image_path)
+    if not src:
+        st.warning("이미지를 불러올 수 없습니다.")
+        return ""
+    if src.startswith("http://") or src.startswith("https://"):
+        st.markdown(
+            f'<div class="detail-preview"><img src="{src}" alt="교재 사진" /></div>',
+            unsafe_allow_html=True,
+        )
+    elif os.path.exists(src):
+        with open(src, "rb") as f:
+            show_large_upload_image(f.read(), os.path.basename(src))
+    else:
+        st.warning("이미지 파일을 찾을 수 없습니다.")
+        return ""
+    return src
+
+
 def link_button(label: str, url: str):
     """새 창으로 열리는 링크 버튼 (구버전 Streamlit이면 HTML로 대체)."""
     if hasattr(st, "link_button"):
@@ -278,25 +298,24 @@ def show_image(image_path: str, **kwargs):
 # 학습 기록 상세보기 + 수정 (전체 화면 팝업)
 # -----------------------------------------------------------------------------
 def render_detail(rec: dict):
-    """선택한 학습 기록을 등록 화면과 같은 좌(사진)/우(수정) 구성으로 보여준다."""
+    """선택한 학습 기록 — 좌(큰 사진) / 우(숙어 입력) 2열 구성."""
     rid = rec["id"]
 
-    # 사진은 화면 높이에 맞춰 적당히 크게(세로로 너무 길지 않게) 보여주고,
-    # 글씨를 또렷하게 보려면 '원본 크게 보기'로 새 창에서 확대(핀치 줌)할 수 있게 한다.
-    src = storage.resolve_image_src(rec["image_path"])
-    if src and (src.startswith("http://") or src.startswith("https://")):
-        st.markdown(
-            f'<img src="{src}" style="max-height:55vh; max-width:100%; width:auto; '
-            f'display:block; margin:0 auto; border-radius:8px;" />',
-            unsafe_allow_html=True,
-        )
-        link_button("🔍 사진 원본 크게 보기 (새 창에서 확대)", src)
-    else:
-        show_image(rec["image_path"], use_container_width=True)
-    st.caption(f"📅 저장일: {rec['created_at']}")
+    img_col, kw_col = st.columns([5, 2], gap="small")
 
-    new_kw_slots = render_keyword_inputs(f"edit_kw_{rid}", split_keywords(rec["keywords"]))
-    new_keywords = join_keywords(new_kw_slots)
+    with img_col:
+        src = show_large_detail_image(rec["image_path"])
+        if src and (src.startswith("http://") or src.startswith("https://")):
+            link_button("🔍 사진 원본 크게 보기 (새 창에서 확대)", src)
+        st.caption(f"📅 저장일: {rec['created_at']}")
+
+    with kw_col:
+        st.markdown('<div class="kw-sticky-marker"></div>', unsafe_allow_html=True)
+        new_kw_slots = render_keyword_inputs(
+            f"edit_kw_{rid}", split_keywords(rec["keywords"])
+        )
+        new_keywords = join_keywords(new_kw_slots)
+
     replace = st.file_uploader(
         "사진 교체 (선택 사항 — 새 사진을 올리면 교체됩니다)",
         type=["jpg", "jpeg", "png", "webp"],
@@ -469,8 +488,9 @@ def main():
           }
         }
         .kw-sticky-marker { display: none; }
-        /* 업로드 사진 — 왼쪽을 크게 */
-        .upload-preview img {
+        /* 업로드·상세 사진 — 왼쪽을 크게 */
+        .upload-preview img,
+        .detail-preview img {
             max-height: 78vh;
             width: 100%;
             object-fit: contain;
