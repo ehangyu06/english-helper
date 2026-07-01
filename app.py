@@ -82,13 +82,40 @@ def make_roleplay_prompt(keywords: str) -> str:
     )
 
 
-def make_quiz_prompt(keywords: str) -> str:
-    """[기능 3] 망각 곡선 기반 복습 퀴즈용 프롬프트"""
+def make_quiz_prompt(keywords: str, studied_date: str = "") -> str:
+    """빈칸 넣기(fill-in-the-blank) 복습 퀴즈용 프롬프트."""
+    if studied_date:
+        intro = (
+            f"안녕! 내가 예전에({studied_date}) 공부했던 영어 표현들 중에서 "
+            f"무작위로 뽑은 키워드가 '{keywords}'야."
+        )
+    else:
+        intro = f"안녕! 오늘 교재를 보며 공부한 영어 표현이 '{keywords}'야."
+
     return (
-        f"안녕! 내가 일주일 전에 공부했던 사진의 키워드가 '{keywords}'였어. "
-        "이 표현들을 내가 기억하고 있는지 테스트할 수 있도록 "
-        "나에게 영어 기습 질문을 하나 던져줘."
+        f"{intro}\n\n"
+        "이 표현들을 사용해서 **빈칸 넣기(fill-in-the-blank) 문장 퀴즈**를 내줘.\n"
+        "규칙:\n"
+        "1) 한 번에 퀴즈 3~5문제를 출제해줘.\n"
+        "2) 각 문장에서 공부한 표현 부분을 ______ 빈칸으로 바꿔줘.\n"
+        "3) 빈칸 아래에 (힌트: 첫 글자 또는 한국어 뜻)을 작게 적어줘.\n"
+        "4) 내가 답을내면 정답을 알려주고, 틀린 부분은 교정해줘.\n"
+        "5) 문장은 일상 회화나 교재 상황에 맞게 자연스럽게 만들어줘.\n"
+        "먼저 첫 번째 문제부터 출제해줘."
     )
+
+
+def keywords_from_records(records: list) -> str:
+    """여러 학습 기록에서 키워드를 모아 하나의 문자열로 만든다."""
+    parts = []
+    seen = set()
+    for rec in records:
+        for piece in (rec.get("keywords") or "").split(","):
+            word = piece.strip()
+            if word and word.lower() not in seen:
+                seen.add(word.lower())
+                parts.append(word)
+    return ", ".join(parts)
 
 
 # -----------------------------------------------------------------------------
@@ -276,8 +303,10 @@ def render_detail(rec: dict):
         key=f"edit_img_{rid}",
     )
     link_button(
-        "🔁 이 기록으로 ChatGPT 복습하기",
-        build_chatgpt_url(make_quiz_prompt(new_keywords or rec["keywords"])),
+        "🔁 이 기록으로 빈칸 퀴즈 풀기",
+        build_chatgpt_url(
+            make_quiz_prompt(new_keywords or rec["keywords"], rec["created_at"])
+        ),
     )
 
     st.divider()
@@ -520,6 +549,10 @@ def main():
                     "💬 ChatGPT와 실전 연습하기",
                     build_chatgpt_url(make_roleplay_prompt(kw)),
                 )
+                link_button(
+                    "📝 지금 입력한 단어로 빈칸 퀴즈",
+                    build_chatgpt_url(make_quiz_prompt(kw)),
+                )
             else:
                 st.button(
                     "💬 ChatGPT와 실전 연습하기",
@@ -589,39 +622,62 @@ def main():
                     st.session_state["detail_id"] = None
 
     # =========================================================================
-    # [우측] 기능 3 : 망각 곡선 기반 랜덤 복습 퀴즈
+    # [우측] 빈칸 넣기 퀴즈 (ChatGPT)
     # =========================================================================
     with right:
-        st.subheader("⚡ 오늘의 기습 복습 퀴즈")
-        st.caption("저장된 지 일주일 이상 지난 과거의 사진을 무작위로 꺼내옵니다.")
+        st.subheader("📝 빈칸 넣기 퀴즈")
+        st.caption("ChatGPT가 공부한 표현으로 빈칸 문장 퀴즈를 냅니다.")
 
-        if st.button("🎲 복습 퀴즈 새로 뽑기", use_container_width=True):
-            st.session_state["quiz_record"] = storage.fetch_review_record(min_days=7)
+        st.markdown("**① 오늘 배운 표현**")
+        try:
+            today_records = storage.fetch_today_records()
+        except Exception:
+            today_records = []
+
+        if not today_records:
+            st.info("오늘 저장한 학습이 없어요. 왼쪽에서 사진과 키워드를 저장해 보세요.")
+        else:
+            today_kw = keywords_from_records(today_records)
+            st.markdown(f"**오늘 키워드:** `{today_kw}`")
+            st.caption(f"오늘 저장 {len(today_records)}건")
+            link_button(
+                "📝 오늘 배운 단어로 빈칸 퀴즈",
+                build_chatgpt_url(make_quiz_prompt(today_kw)),
+            )
+            with st.expander("🔎 프롬프트 미리보기"):
+                st.code(make_quiz_prompt(today_kw), language="text")
+
+        st.divider()
+
+        st.markdown("**② 무작위 복습**")
+        st.caption("지금까지 공부한 내용 중 무작위로 골라 퀴즈를 냅니다.")
+
+        if st.button("🎲 다른 문제 뽑기", use_container_width=True, key="pick_random_quiz"):
+            st.session_state["quiz_record"] = storage.fetch_random_record()
 
         if "quiz_record" not in st.session_state:
             try:
-                st.session_state["quiz_record"] = storage.fetch_review_record(min_days=7)
+                st.session_state["quiz_record"] = storage.fetch_random_record()
             except Exception:
                 st.session_state["quiz_record"] = None
 
         quiz = st.session_state.get("quiz_record")
 
         if quiz is None:
-            st.info(
-                "아직 복습할 과거 기록이 없습니다.\n\n"
-                "왼쪽에서 학습을 등록하고 일주일이 지나면 "
-                "이곳에 기습 복습 퀴즈가 나타납니다!"
-            )
+            st.info("아직 복습할 학습 기록이 없습니다. 왼쪽에서 첫 기록을 등록해 보세요!")
         else:
             show_image(quiz["image_path"], use_container_width=True)
             st.markdown(f"**📅 공부했던 날:** {quiz['created_at']}")
-            st.markdown(f"**🔑 그때의 키워드:** `{quiz['keywords']}`")
+            st.markdown(f"**🔑 키워드:** `{quiz['keywords']}`")
             link_button(
-                "🧠 이 사진으로 ChatGPT와 복습 퀴즈 풀기",
-                build_chatgpt_url(make_quiz_prompt(quiz["keywords"])),
+                "🧠 무작위 빈칸 퀴즈 풀기",
+                build_chatgpt_url(make_quiz_prompt(quiz["keywords"], quiz["created_at"])),
             )
-            with st.expander("🔎 복습 프롬프트 미리보기"):
-                st.code(make_quiz_prompt(quiz["keywords"]), language="text")
+            with st.expander("🔎 프롬프트 미리보기"):
+                st.code(
+                    make_quiz_prompt(quiz["keywords"], quiz["created_at"]),
+                    language="text",
+                )
 
     st.divider()
     st.caption(

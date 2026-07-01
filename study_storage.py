@@ -319,6 +319,35 @@ def fetch_all_records():
             conn.close()
 
 
+def fetch_today_records():
+    """오늘 저장한 학습 기록을 최신순으로 가져온다."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    return [r for r in fetch_all_records() if str(r.get("created_at", "")).startswith(today)]
+
+
+def fetch_random_record():
+    """전체 학습 기록 중 무작위로 한 건을 가져온다."""
+    if use_supabase():
+        client = _client()
+        res = client.table(TABLE).select("*").execute()
+        rows = res.data or []
+        if not rows:
+            return None
+        return _normalize(random.choice(rows))
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT id, created_at, keywords, image_path FROM study_records"
+            ).fetchall()
+            if not rows:
+                return None
+            return _normalize(dict(random.choice(rows)))
+        finally:
+            conn.close()
+
+
 def fetch_review_record(min_days: int = 7):
     """
     저장된 지 min_days 일 이상 지난 과거 기록 중 하나를 무작위로 가져온다.
