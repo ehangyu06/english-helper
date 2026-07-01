@@ -325,6 +325,35 @@ def fetch_today_records():
     return [r for r in fetch_all_records() if str(r.get("created_at", "")).startswith(today)]
 
 
+RECENT_REVIEW_DAYS = 14  # 무작위 복습: 최근 N일 이내 학습만
+
+
+def fetch_random_recent_record(days: int = RECENT_REVIEW_DAYS):
+    """최근 days 일 이내 학습 기록 중 무작위로 한 건을 가져온다."""
+    if use_supabase():
+        client = _client()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        res = client.table(TABLE).select("*").gte("created_at", cutoff).execute()
+        rows = res.data or []
+        if not rows:
+            return None
+        return _normalize(random.choice(rows))
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            conn.row_factory = sqlite3.Row
+            cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+            rows = conn.execute(
+                "SELECT id, created_at, keywords, image_path FROM study_records WHERE created_at >= ?",
+                (cutoff,),
+            ).fetchall()
+            if not rows:
+                return None
+            return _normalize(dict(random.choice(rows)))
+        finally:
+            conn.close()
+
+
 def fetch_random_record():
     """전체 학습 기록 중 무작위로 한 건을 가져온다."""
     if use_supabase():

@@ -87,7 +87,7 @@ def make_quiz_prompt(keywords: str, studied_date: str = "") -> str:
     if studied_date:
         intro = (
             f"안녕! 내가 예전에({studied_date}) 공부했던 영어 표현들 중에서 "
-            f"무작위로 뽑은 키워드가 '{keywords}'야."
+            f"무작위로 뽑은 키워드가 '{keywords}'야. (최근 2주 안에 공부한 내용이야.)"
         )
     else:
         intro = f"안녕! 오늘 교재를 보며 공부한 영어 표현이 '{keywords}'야."
@@ -669,28 +669,31 @@ def main():
 
         st.divider()
 
-        st.markdown("**② 무작위 복습**")
-        st.caption("지금까지 공부한 내용 중 무작위로 골라 퀴즈를 냅니다.")
+        st.markdown("**② 최근 2주 복습**")
+        st.caption("최근 2주 동안 공부한 내용 중 무작위로 골라 퀴즈를 냅니다.")
 
         if st.button("🎲 다른 문제 뽑기", use_container_width=True, key="pick_random_quiz"):
-            st.session_state["quiz_record"] = storage.fetch_random_record()
+            st.session_state["quiz_record"] = storage.fetch_random_recent_record()
 
         if "quiz_record" not in st.session_state:
             try:
-                st.session_state["quiz_record"] = storage.fetch_random_record()
+                st.session_state["quiz_record"] = storage.fetch_random_recent_record()
             except Exception:
                 st.session_state["quiz_record"] = None
 
         quiz = st.session_state.get("quiz_record")
 
         if quiz is None:
-            st.info("아직 복습할 학습 기록이 없습니다. 왼쪽에서 첫 기록을 등록해 보세요!")
+            st.info(
+                "최근 2주 안에 저장한 학습 기록이 없습니다.\n\n"
+                "왼쪽에서 학습을 등록하면 이곳에서 복습 퀴즈를 풀 수 있어요!"
+            )
         else:
             show_image(quiz["image_path"], use_container_width=True)
             st.markdown(f"**📅 공부했던 날:** {quiz['created_at']}")
             st.markdown(f"**🔑 키워드:** `{quiz['keywords']}`")
             link_button(
-                "🧠 무작위 빈칸 퀴즈 풀기",
+                "🧠 최근 2주 빈칸 퀴즈 풀기",
                 build_chatgpt_url(make_quiz_prompt(quiz["keywords"], quiz["created_at"])),
             )
             with st.expander("🔎 프롬프트 미리보기"):
