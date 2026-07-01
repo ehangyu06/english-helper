@@ -26,28 +26,35 @@ import storage  # 저장 백엔드 (로컬 SQLite / 클라우드 Supabase 자동
 CHATGPT_BASE_URL = "https://chatgpt.com/"  # 무료 ChatGPT 웹사이트
 
 
-def correct_orientation(file_bytes: bytes, file_name: str):
+def prepare_upload_image(file_bytes: bytes, file_name: str):
     """
-    아이폰/아이패드 사진의 회전 정보(EXIF)를 실제 픽셀에 적용해 바로 세운다.
-    보정된 (이미지 바이트, 저장용 파일명)을 반환한다.
+    아이폰/아이패드 사진의 회전(EXIF)을 픽셀에 반영하고,
+    위치·촬영 정보 등 메타데이터는 제거한 뒤 저장용 바이트를 만든다.
     문제가 생기면 원본을 그대로 돌려준다.
     """
     try:
         img = Image.open(io.BytesIO(file_bytes))
-        img = ImageOps.exif_transpose(img)  # EXIF 방향 정보를 픽셀에 반영
+        img = ImageOps.exif_transpose(img)
 
         ext = os.path.splitext(file_name)[1].lower()
         if ext in (".jpg", ".jpeg"):
             fmt, out_ext = "JPEG", ".jpg"
-            if img.mode in ("RGBA", "P"):
-                img = img.convert("RGB")
         elif ext == ".webp":
             fmt, out_ext = "WEBP", ".webp"
         else:
             fmt, out_ext = "PNG", ".png"
 
+        # EXIF/GPS 등 메타데이터 제거 — 픽셀만 새 이미지로 복사
+        if img.mode in ("RGBA", "P") and fmt == "JPEG":
+            img = img.convert("RGB")
+        clean = Image.new(img.mode, img.size)
+        clean.putdata(list(img.getdata()))
+
         buf = io.BytesIO()
-        img.save(buf, format=fmt)
+        if fmt == "JPEG":
+            clean.save(buf, format=fmt, quality=85, optimize=True)
+        else:
+            clean.save(buf, format=fmt)
         base = os.path.splitext(file_name)[0]
         return buf.getvalue(), f"{base}{out_ext}"
     except Exception:
@@ -102,10 +109,14 @@ def link_button(label: str, url: str):
         )
 
 
-def show_image(src: str, **kwargs):
-    """로컬 경로(파일 존재 확인 후) 또는 공개 URL 이미지를 표시한다."""
-    if not src:
+def show_image(image_path: str, **kwargs):
+    """로컬 경로 또는 Signed URL(만료 링크)로 이미지를 표시한다."""
+    if not image_path:
         st.warning("이미지 정보가 없습니다.")
+        return
+    src = storage.resolve_image_src(image_path)
+    if not src:
+        st.warning("이미지를 불러올 수 없습니다. (Storage 설정을 확인해 주세요)")
         return
     if src.startswith("http://") or src.startswith("https://"):
         st.image(src, **kwargs)
@@ -124,7 +135,7 @@ def render_detail(rec: dict):
 
     # 사진은 화면 높이에 맞춰 적당히 크게(세로로 너무 길지 않게) 보여주고,
     # 글씨를 또렷하게 보려면 '원본 크게 보기'로 새 창에서 확대(핀치 줌)할 수 있게 한다.
-    src = rec["image_src"]
+    src = storage.resolve_image_src(rec["image_path"])
     if src and (src.startswith("http://") or src.startswith("https://")):
         st.markdown(
             f'<img src="{src}" style="max-height:55vh; max-width:100%; width:auto; '
@@ -133,7 +144,7 @@ def render_detail(rec: dict):
         )
         link_button("🔍 사진 원본 크게 보기 (새 창에서 확대)", src)
     else:
-        show_image(src, use_container_width=True)
+        show_image(rec["image_path"], use_container_width=True)
     st.caption(f"📅 저장일: {rec['created_at']}")
 
     new_keywords = st.text_input(
@@ -161,7 +172,7 @@ def render_detail(rec: dict):
             else:
                 try:
                     if replace is not None:
-                        fb, fn = correct_orientation(replace.getbuffer().tobytes(), replace.name)
+                        fb, fn = prepare_upload_image(replace.getbuffer().tobytes(), replace.name)
                         storage.update_study(rid, new_keywords.strip(), fn, fb)
                     else:
                         storage.update_study(rid, new_keywords.strip())
@@ -210,6 +221,28 @@ else:
 
 
 # -----------------------------------------------------------------------------
+# 앱 비밀번호 잠금 (secrets [auth] password)
+# -----------------------------------------------------------------------------
+def require_auth() -> bool:
+    """비밀번호가 설정되어 있으면 로그인 화면을 보여준다. 통과 시 True."""
+    if not storage.auth_enabled():
+        return True
+    if st.session_state.get("authenticated"):
+        return True
+
+    st.title("🔒 로그인")
+    st.caption("이 앱은 비밀번호로 보호되어 있습니다. 본인만 접속할 수 있어요.")
+    entered = st.text_input("비밀번호", type="password", key="login_password")
+    if st.button("입장", use_container_width=True, type="primary"):
+        if entered == storage.auth_password():
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("비밀번호가 올바르지 않습니다.")
+    return False
+
+
+# -----------------------------------------------------------------------------
 # 화면 구성
 # -----------------------------------------------------------------------------
 def main():
@@ -220,6 +253,16 @@ def main():
     )
 
     storage.init_storage()
+
+    if not require_auth():
+        return
+
+    if storage.auth_enabled():
+        with st.sidebar:
+            st.caption("🔒 비밀번호로 보호 중")
+            if st.button("로그아웃", use_container_width=True):
+                st.session_state["authenticated"] = False
+                st.rerun()
 
     st.session_state.setdefault("form_round", 0)   # 저장 후 입력칸 초기화용
     st.session_state.setdefault("detail_id", None)  # 상세보기 중인 기록 id
@@ -276,7 +319,7 @@ def main():
 
         fixed_bytes, fixed_name = (None, None)
         if uploaded is not None:
-            fixed_bytes, fixed_name = correct_orientation(
+            fixed_bytes, fixed_name = prepare_upload_image(
                 uploaded.getbuffer().tobytes(), uploaded.name
             )
 
@@ -355,7 +398,7 @@ def main():
                 cols = st.columns(cols_per_row)
                 for col, rec in zip(cols, row):
                     with col:
-                        show_image(rec["image_src"], use_container_width=True)
+                        show_image(rec["image_path"], use_container_width=True)
                         short_kw = rec["keywords"]
                         if len(short_kw) > 16:
                             short_kw = short_kw[:16] + "…"
@@ -403,7 +446,7 @@ def main():
                 "이곳에 기습 복습 퀴즈가 나타납니다!"
             )
         else:
-            show_image(quiz["image_src"], use_container_width=True)
+            show_image(quiz["image_path"], use_container_width=True)
             st.markdown(f"**📅 공부했던 날:** {quiz['created_at']}")
             st.markdown(f"**🔑 그때의 키워드:** `{quiz['keywords']}`")
             link_button(

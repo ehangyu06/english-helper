@@ -22,5 +22,5 @@ create index if not exists idx_study_records_created_at
 --  Storage 버킷은 SQL Editor가 아니라 웹 UI에서 만드세요:
 --    Storage → New bucket
 --    이름: study-images
---    Public bucket: ON (체크)
+--    Public bucket: OFF (체크 해제 — Private 로 보관)
 -- =============================================================================

@@ -28,8 +28,10 @@
 2. **New bucket** 클릭
 3. 설정:
    - **Name**: `study-images` (정확히 이 이름!)
-   - **Public bucket**: **ON** (체크 필수 — 사진 화면 표시용)
+   - **Public bucket**: **OFF** (체크 해제 — Private 로 보관)
 4. **Create bucket**
+
+> 이미 Public 으로 만들었다면: Storage → `study-images` → ⋮ 메뉴 → **Make private** 로 변경하세요.
 
 ### 1-4. API 키 복사 (나중에 Streamlit에 넣음)
 1. 왼쪽 하단 **Project Settings** (톱니바퀴) 클릭
@@ -84,7 +86,13 @@ git push -u origin main
 [supabase]
 url = "https://여기에-Project-URL-붙여넣기.supabase.co"
 key = "여기에-service_role-키-붙여넣기"
+signed_url_expires = 3600
+
+[auth]
+password = "본인만-아는-강한-비밀번호"
 ```
+
+> `password` 는 앱 접속 잠금용입니다. 아이패드·아이폰에서 쓸 때 반드시 설정하세요.
 
 6. **Deploy!** 클릭 → 1~3분 대기
 7. 완료되면 `https://english-helper-xxxx.streamlit.app` 같은 주소가 생깁니다
@@ -99,7 +107,8 @@ key = "여기에-service_role-키-붙여넣기"
 ## ✅ 4단계: 동작 확인
 
 배포된 앱에서 확인할 것:
-- [ ] 화면 상단에 `클라우드(Supabase) · 영구 저장` 표시
+- [ ] 로그인 화면 → 비밀번호 입력 후 입장
+- [ ] 화면 상단에 `클라우드(Supabase) · Private + Signed URL` 표시
 - [ ] 사진 업로드 + 키워드 저장 성공
 - [ ] Supabase **Table Editor** → `study_records`에 행 추가됨
 - [ ] Supabase **Storage** → `study-images`에 사진 파일 있음
@@ -111,7 +120,8 @@ key = "여기에-service_role-키-붙여넣기"
 
 | 증상 | 해결 |
 |------|------|
-| 저장 오류 | `service_role` 키인지, 버킷 이름이 `study-images`인지 확인 |
-| 사진 안 보임 | Storage 버킷이 **Public** 인지 확인 |
+| 저장 오류 | `service_role` 키인지, 버킷 이름이 `study-images` 인지 확인 |
+| 사진 안 보임 | 버킷이 Private 이면 `service_role` 키 필요. Secrets 설정 확인 |
+| 로그인만 보임 | `[auth] password` 와 입력 비밀번호 일치 여부 확인 |
 | 데이터 사라짐 | Streamlit Secrets에 Supabase 설정이 있는지 확인 |
 | Git push 실패 | GitHub 로그인 / Personal Access Token 필요할 수 있음 |

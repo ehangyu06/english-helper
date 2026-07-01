@@ -6,8 +6,9 @@
 #  - 비밀키가 없으면(예: 내 컴퓨터에서 테스트할 때) 기존처럼 로컬 SQLite와
 #    saved_images 폴더를 사용합니다.
 #
-#  앱 코드(app.py)는 이 모듈의 함수만 호출하면 되고,
-#  어떤 백엔드를 쓰는지는 신경 쓸 필요가 없습니다.
+#  보안 (Supabase 모드):
+#  - Storage 버킷은 Private 로 두고, DB에는 파일명(객체 경로)만 저장합니다.
+#  - 화면에 표시할 때만 만료되는 Signed URL 을 서버에서 발급합니다.
 # =============================================================================
 
 import os
@@ -17,6 +18,7 @@ import sqlite3
 import random
 import mimetypes
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 import streamlit as st
 
@@ -27,6 +29,7 @@ IMAGE_DIR = "saved_images"
 # ----- Supabase 저장 설정 -----
 BUCKET = "study-images"          # Supabase Storage 버킷 이름
 TABLE = "study_records"          # Supabase 테이블 이름
+DEFAULT_SIGNED_URL_EXPIRES = 3600  # Signed URL 유효 시간(초). 기본 1시간
 
 
 # -----------------------------------------------------------------------------
@@ -50,9 +53,39 @@ def _client():
     return create_client(cfg["url"], cfg["key"])
 
 
+def _signed_url_expires() -> int:
+    """secrets 에서 Signed URL 만료 시간(초)을 읽는다."""
+    try:
+        cfg = st.secrets.get("supabase", {})
+        return int(cfg.get("signed_url_expires", DEFAULT_SIGNED_URL_EXPIRES))
+    except Exception:
+        return DEFAULT_SIGNED_URL_EXPIRES
+
+
 def backend_name() -> str:
     """현재 사용 중인 저장 방식 이름 (화면 안내용)."""
-    return "클라우드(Supabase) · 영구 저장" if use_supabase() else "로컬(SQLite) · 이 컴퓨터에만 저장"
+    if use_supabase():
+        return "클라우드(Supabase) · Private + Signed URL"
+    return "로컬(SQLite) · 이 컴퓨터에만 저장"
+
+
+# -----------------------------------------------------------------------------
+# 앱 비밀번호 (선택)
+# -----------------------------------------------------------------------------
+def auth_password() -> str:
+    """secrets [auth] password 가 있으면 반환. 없으면 빈 문자열(잠금 해제)."""
+    try:
+        cfg = st.secrets.get("auth", None)
+        if not cfg:
+            return ""
+        return str(cfg.get("password", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def auth_enabled() -> bool:
+    """앱 비밀번호 잠금이 켜져 있는지."""
+    return bool(auth_password())
 
 
 # -----------------------------------------------------------------------------
@@ -68,6 +101,76 @@ def _format_dt(value) -> str:
         return dt.strftime("%Y-%m-%d %H:%M")
     except Exception:
         return str(value)
+
+
+def _storage_object_path(image_path: str) -> Optional[str]:
+    """
+    DB 에 저장된 image_path 값에서 Supabase Storage 객체 경로를 추출한다.
+    - 새 형식: 파일명만 (예: 20250101_xxx_img.jpg)
+    - 구 형식: 공개 URL (마이그레이션 호환)
+    - 로컬 경로: None 반환
+    """
+    if not image_path:
+        return None
+    if image_path.startswith(IMAGE_DIR) or os.path.isabs(image_path):
+        return None
+    if image_path.startswith("http://") or image_path.startswith("https://"):
+        marker = f"/{BUCKET}/"
+        if marker in image_path:
+            return image_path.split(marker, 1)[1].split("?")[0]
+        return image_path.rstrip("/").split("/")[-1]
+    return image_path
+
+
+def _extract_signed_url(response) -> str:
+    """Supabase create_signed_url 응답에서 URL 문자열을 꺼낸다."""
+    if response is None:
+        return ""
+    if isinstance(response, str):
+        return response
+    if isinstance(response, dict):
+        for key in ("signedURL", "signedUrl", "signed_url"):
+            if response.get(key):
+                return str(response[key])
+    for attr in ("signed_url", "signedURL", "signedUrl"):
+        if hasattr(response, attr):
+            val = getattr(response, attr)
+            if val:
+                return str(val)
+    return ""
+
+
+def resolve_image_src(image_path: str) -> str:
+    """
+    화면 표시용 이미지 주소를 반환한다.
+    - 로컬: 파일 경로 그대로
+    - Supabase: 만료되는 Signed URL (Private 버킷)
+    """
+    if not image_path:
+        return ""
+
+    if not use_supabase():
+        return image_path
+
+    obj_path = _storage_object_path(image_path)
+    if not obj_path:
+        return image_path
+
+    try:
+        client = _client()
+        res = client.storage.from_(BUCKET).create_signed_url(
+            obj_path, _signed_url_expires()
+        )
+        signed = _extract_signed_url(res)
+        if signed:
+            return signed
+    except Exception:
+        pass
+
+    # 구 공개 URL 이 DB 에 남아 있고 버킷이 아직 Public 인 경우 폴백
+    if image_path.startswith("http://") or image_path.startswith("https://"):
+        return image_path
+    return ""
 
 
 # -----------------------------------------------------------------------------
@@ -113,7 +216,7 @@ def _unique_name(file_name: str) -> str:
 
 
 def _store_image(file_name: str, file_bytes: bytes) -> str:
-    """사진을 저장하고, DB에 기록할 경로(로컬 경로 또는 공개 URL)를 돌려준다."""
+    """사진을 저장하고, DB에 기록할 경로(로컬 경로 또는 Storage 객체 경로)를 돌려준다."""
     safe_name = _unique_name(file_name)
 
     if use_supabase():
@@ -124,7 +227,7 @@ def _store_image(file_name: str, file_bytes: bytes) -> str:
             file=file_bytes,
             file_options={"content-type": mime, "upsert": "true"},
         )
-        return client.storage.from_(BUCKET).get_public_url(safe_name)
+        return safe_name  # Private 버킷: 파일명만 DB에 저장
     else:
         os.makedirs(IMAGE_DIR, exist_ok=True)
         save_path = os.path.join(IMAGE_DIR, safe_name)
@@ -203,11 +306,13 @@ def delete_study(record_id):
 # -----------------------------------------------------------------------------
 def _normalize(row: dict) -> dict:
     """백엔드와 무관하게 동일한 형태(dict)로 반환한다."""
+    image_path = row["image_path"]
     return {
         "id": row["id"],
         "created_at": _format_dt(row["created_at"]),
         "keywords": row["keywords"],
-        "image_src": row["image_path"],  # 로컬 경로 또는 공개 URL
+        "image_path": image_path,
+        "image_src": resolve_image_src(image_path),
     }
 
 

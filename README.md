@@ -63,7 +63,7 @@ create table if not exists study_records (
 
 3. 왼쪽 메뉴 **Storage** → **New bucket** →
    - 이름: `study-images`
-   - **Public bucket** 체크 ✅ (사진을 화면에 표시하려면 공개 필요)
+   - **Public bucket** 체크 **해제** (Private — 사진은 Signed URL 로만 조회)
    - **Create bucket**
 4. 왼쪽 메뉴 **Project Settings → API** 에서 아래 2가지를 복사해 둡니다:
    - **Project URL** (예: `https://abcd1234.supabase.co`)
@@ -98,10 +98,29 @@ git push -u origin main
 [supabase]
 url = "https://여기에-프로젝트-주소.supabase.co"
 key = "여기에-service_role-키-붙여넣기"
+signed_url_expires = 3600
+
+[auth]
+password = "본인만-아는-강한-비밀번호"
 ```
+
+> `password` 를 설정하면 앱 접속 시 로그인 화면이 나타납니다. 배포 시 반드시 설정하세요.
 
 5. **Deploy!** → 1~2분 뒤 `https://...streamlit.app` 주소가 생깁니다.
 6. 그 주소를 아이폰/아이패드 사파리에서 열고, **공유 → 홈 화면에 추가**하면 앱처럼 쓸 수 있어요. 📲
+
+---
+
+## 🔒 보안 (사진 저장)
+
+| 항목 | 설명 |
+|------|------|
+| **Private Storage** | Supabase 버킷을 비공개로 두면 URL을 알아도 사진에 바로 접근할 수 없습니다. |
+| **Signed URL** | 화면에 사진을 보여줄 때만 서버가 1시간짜리 임시 링크를 발급합니다. |
+| **앱 비밀번호** | `[auth] password` 로 본인만 앱에 접속할 수 있습니다. |
+| **EXIF 제거** | 업로드 시 위치(GPS) 등 사진 메타데이터를 자동으로 삭제합니다. |
+
+> 이미 Public 버킷으로 배포했다면: Supabase Storage → `study-images` → 설정에서 **Public을 끄면** 됩니다.
 
 ---
 
@@ -128,6 +147,7 @@ key = "여기에-service_role-키-붙여넣기"
 3. 며칠 뒤 다시 접속하면 오른쪽 **`오늘의 기습 복습 퀴즈`** 에서 예전 학습을 다시 만나요!
 
 ## ❓ 자주 묻는 문제
-- **사진이 안 보여요** → Supabase 버킷이 **Public** 인지 확인하세요.
+- **사진이 안 보여요** → Supabase 버킷 이름이 `study-images` 인지, `service_role` 키가 맞는지 확인하세요. Private 버킷이면 Signed URL 로 표시됩니다.
+- **로그인 화면만 나와요** → Streamlit Secrets 의 `[auth] password` 와 입력한 비밀번호가 같은지 확인하세요.
 - **저장이 안 돼요 / 권한 오류** → `service_role` 키를 넣었는지, 테이블 이름이 `study_records` 인지 확인하세요.
 - **데이터가 사라졌어요** → 비밀키 없이(로컬 모드) 클라우드에 배포하면 데이터가 임시 저장되어 사라집니다. 반드시 Supabase 비밀키를 설정하세요.
