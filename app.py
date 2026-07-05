@@ -40,8 +40,12 @@ def prepare_upload_image(file_bytes: bytes, file_name: str):
     """
     아이폰/아이패드 사진의 회전(EXIF)을 픽셀에 반영하고,
     위치·촬영 정보 등 메타데이터는 제거한 뒤 저장용 바이트를 만든다.
-    문제가 생기면 원본을 그대로 돌려준다.
+    비정상 파일이면 ValueError 를 던진다.
     """
+    ok, err = storage.validate_upload(file_name, file_bytes)
+    if not ok:
+        raise ValueError(err)
+
     try:
         img = Image.open(io.BytesIO(file_bytes))
         img = ImageOps.exif_transpose(img)
@@ -66,9 +70,15 @@ def prepare_upload_image(file_bytes: bytes, file_name: str):
         else:
             clean.save(buf, format=fmt)
         base = os.path.splitext(file_name)[0]
-        return buf.getvalue(), f"{base}{out_ext}"
+        out_bytes = buf.getvalue()
+        ok, err = storage.validate_image_bytes(out_bytes)
+        if not ok:
+            raise ValueError(storage.INVALID_IMAGE_MESSAGE)
+        return out_bytes, f"{base}{out_ext}"
+    except ValueError:
+        raise
     except Exception:
-        return file_bytes, file_name
+        raise ValueError(storage.INVALID_IMAGE_MESSAGE)
 
 
 # -----------------------------------------------------------------------------
@@ -412,6 +422,11 @@ def inject_keyword_enter_navigation():
 
 def show_large_upload_image(image_bytes: bytes, file_name: str):
     """업로드 직후 교재 사진을 크게 보여준다."""
+    valid, reason = storage.validate_image_bytes(image_bytes)
+    if not valid:
+        st.warning("이미지를 표시할 수 없습니다")
+        return
+
     ext = os.path.splitext(file_name)[1].lower()
     if ext in (".jpg", ".jpeg"):
         mime = "image/jpeg"
@@ -428,22 +443,20 @@ def show_large_upload_image(image_bytes: bytes, file_name: str):
 
 def show_large_detail_image(image_path: str) -> str:
     """상세/수정 화면용 — 교재 사진을 크게 보여준다. 표시용 URL/경로를 반환."""
+    image_bytes = storage.read_display_image_bytes(image_path)
+    if image_bytes is None:
+        st.warning("이미지를 표시할 수 없습니다")
+        return ""
+
+    file_name = os.path.basename(image_path) or "image.jpg"
+    show_large_upload_image(image_bytes, file_name)
+
     src = storage.resolve_image_src(image_path)
-    if not src:
-        st.warning("이미지를 불러올 수 없습니다.")
-        return ""
-    if src.startswith("http://") or src.startswith("https://"):
-        st.markdown(
-            f'<div class="detail-preview"><img src="{src}" alt="교재 사진" /></div>',
-            unsafe_allow_html=True,
-        )
-    elif os.path.exists(src):
-        with open(src, "rb") as f:
-            show_large_upload_image(f.read(), os.path.basename(src))
-    else:
-        st.warning("이미지 파일을 찾을 수 없습니다.")
-        return ""
-    return src
+    if src and src.startswith(("http://", "https://")):
+        return src
+    if src and os.path.exists(src):
+        return src
+    return ""
 
 
 def link_button(label: str, url: str):
@@ -465,20 +478,27 @@ def link_button(label: str, url: str):
 
 
 def show_image(image_path: str, **kwargs):
-    """로컬 경로 또는 Signed URL(만료 링크)로 이미지를 표시한다."""
-    if not image_path:
-        st.warning("이미지 정보가 없습니다.")
+    """로컬 경로 또는 Supabase Signed URL 이미지를 검증한 뒤 표시한다."""
+    image_bytes = storage.read_display_image_bytes(image_path)
+    if image_bytes is None:
+        if (image_path or "").strip():
+            st.warning("이미지를 표시할 수 없습니다")
         return
-    src = storage.resolve_image_src(image_path)
-    if not src:
-        st.warning("이미지를 불러올 수 없습니다. (Storage 설정을 확인해 주세요)")
+    try:
+        st.image(io.BytesIO(image_bytes), **kwargs)
+    except Exception:
+        st.warning("이미지를 표시할 수 없습니다")
+
+
+def show_record_thumbnail(image_path: str, **kwargs):
+    """누적 기록 목록용 썸네일 — 깨진 이미지가 있어도 나머지 기록은 계속 표시."""
+    if not (image_path or "").strip():
+        st.markdown(
+            '<div class="record-no-image">📝 사진 없음</div>',
+            unsafe_allow_html=True,
+        )
         return
-    if src.startswith("http://") or src.startswith("https://"):
-        st.image(src, **kwargs)
-    elif os.path.exists(src):
-        st.image(src, **kwargs)
-    else:
-        st.warning("이미지 파일을 찾을 수 없습니다. (파일이 이동/삭제되었을 수 있어요)")
+    show_image(image_path, **kwargs)
 
 
 # -----------------------------------------------------------------------------
@@ -491,9 +511,15 @@ def render_detail(rec: dict):
     img_col, kw_col = st.columns([5, 2], gap="small")
 
     with img_col:
-        src = show_large_detail_image(rec["image_path"])
-        if src and (src.startswith("http://") or src.startswith("https://")):
-            link_button("🔍 사진 원본 크게 보기 (새 창에서 확대)", src)
+        if (rec.get("image_path") or "").strip():
+            src = show_large_detail_image(rec["image_path"])
+            if src and (src.startswith("http://") or src.startswith("https://")):
+                link_button("🔍 사진 원본 크게 보기 (새 창에서 확대)", src)
+        else:
+            st.markdown(
+                '<div class="record-no-image">📝 사진 없음</div>',
+                unsafe_allow_html=True,
+            )
         st.caption(f"📅 저장일: {rec['created_at']}")
 
     with kw_col:
@@ -525,13 +551,17 @@ def render_detail(rec: dict):
             else:
                 try:
                     if replace is not None:
-                        fb, fn = prepare_upload_image(replace.getbuffer().tobytes(), replace.name)
+                        fb, fn = prepare_upload_image(
+                            replace.getbuffer().tobytes(), replace.name
+                        )
                         storage.update_study(rid, new_keywords.strip(), fn, fb)
                     else:
                         storage.update_study(rid, new_keywords.strip())
                     st.session_state["detail_id"] = None
-                    st.session_state["flash"] = "수정 내용을 저장했어요."
+                    st.session_state["flash"] = "저장되었습니다."
                     st.rerun()
+                except ValueError as e:
+                    st.error(str(e))
                 except Exception as e:
                     st.error(f"수정 중 오류가 발생했어요: {e}")
 
@@ -627,6 +657,18 @@ def render_logout_control():
             st.rerun()
 
 
+def render_storage_footer():
+    """화면 하단에 저장 방식을 표시한다."""
+    info = storage.get_storage_info()
+    with st.expander("🗄️ 저장 위치", expanded=False):
+        st.markdown(f"**{info['label']}**")
+        if info["mode"] == "local":
+            st.code(
+                f"DB: {info['db_path']}\n이미지: {info['image_dir']}/",
+                language="text",
+            )
+
+
 # -----------------------------------------------------------------------------
 # 화면 구성
 # -----------------------------------------------------------------------------
@@ -702,6 +744,41 @@ def main():
             padding: 0.2rem 0.55rem;
             font-size: 0.95rem;
         }
+        /* iPad / 터치 — 업로드·저장 버튼 크게 */
+        div[data-testid="stFileUploader"] button,
+        div[data-testid="stFileUploader"] section button {
+            min-height: 3rem !important;
+            font-size: 1.05rem !important;
+            padding: 0.65rem 1rem !important;
+        }
+        .stButton > button {
+            min-height: 2.75rem !important;
+            font-size: 1rem !important;
+        }
+        .stButton > button[kind="primary"] {
+            min-height: 3.1rem !important;
+            font-size: 1.08rem !important;
+            font-weight: 700 !important;
+        }
+        div[data-testid="stVerticalBlock"]:has(.kw-panel-marker) input[type="text"] {
+            font-size: 1.1rem !important;
+            min-height: 2.85rem !important;
+            padding: 0.55rem 0.8rem !important;
+        }
+        .record-no-image {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 8rem;
+            border: 2px dashed #cbd5e1;
+            border-radius: 8px;
+            background: #f8fafc;
+            color: #64748b;
+            font-size: 1rem;
+            font-weight: 600;
+            text-align: center;
+            padding: 1rem;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -720,36 +797,52 @@ def main():
         # 저장할 때마다 form_round가 1씩 늘어나며, 위젯 key가 바뀌어 입력칸이 깨끗하게 초기화됩니다.
         rnd = st.session_state["form_round"]
         uploaded = st.file_uploader(
-            "교재 사진을 업로드하세요 (촬영 또는 사진 보관함에서 선택)",
+            "교재 사진 업로드 (선택 — JPG/PNG/WEBP)",
             type=["jpg", "jpeg", "png", "webp"],
             key=f"uploader_{rnd}",
         )
 
         fixed_bytes, fixed_name = (None, None)
+        upload_error = None
         if uploaded is not None:
-            fixed_bytes, fixed_name = prepare_upload_image(
-                uploaded.getbuffer().tobytes(), uploaded.name
-            )
+            try:
+                fixed_bytes, fixed_name = prepare_upload_image(
+                    uploaded.getbuffer().tobytes(), uploaded.name
+                )
+            except ValueError as exc:
+                upload_error = str(exc)
+                fixed_bytes, fixed_name = None, None
 
         def write_pane():
             """키워드 입력 + 저장/연습 버튼 묶음. (사진 옆 고정 패널로도, 단독으로도 사용)"""
+            if upload_error:
+                st.error(upload_error)
+
             kw_slots = render_keyword_inputs(f"kw_{rnd}")
             kw = join_keywords(kw_slots)
-            if st.button("💾 학습 기록 저장하기", use_container_width=True, key=f"save_{rnd}"):
-                if uploaded is None:
-                    st.warning("먼저 교재 사진을 업로드해 주세요.")
-                elif not kw:
+            if st.button(
+                "💾 학습 기록 저장하기",
+                use_container_width=True,
+                key=f"save_{rnd}",
+                type="primary",
+            ):
+                if not kw:
                     st.warning("핵심 키워드를 최소 1개 이상 입력해 주세요.")
+                elif uploaded is not None and upload_error:
+                    st.error(upload_error)
                 else:
                     try:
-                        storage.save_study(kw, fixed_name, fixed_bytes)
+                        if uploaded is not None and fixed_bytes is not None:
+                            storage.save_study(kw, fixed_name, fixed_bytes)
+                        else:
+                            storage.save_study(kw)
                         st.session_state["form_round"] += 1
-                        st.session_state["flash"] = (
-                            f"저장 완료! ‘{kw}’ — 이어서 다음 학습을 등록하세요."
-                        )
+                        st.session_state["flash"] = "저장되었습니다."
                         st.rerun()
+                    except ValueError as e:
+                        st.error(str(e))
                     except Exception as e:
-                        st.error(f"저장 중 오류가 발생했어요: {e}")
+                        st.error(f"저장 실패: {e}")
 
             if kw:
                 link_button(
@@ -774,7 +867,7 @@ def main():
                 st.code(make_roleplay_prompt(preview_kw), language="text")
             return kw
 
-        if uploaded is not None:
+        if uploaded is not None and not upload_error:
             # 사진(왼쪽 넓게) + 숙어 입력(오른쪽 좁게)
             pcol, wcol = st.columns([5, 2], gap="small")
             with pcol:
@@ -805,7 +898,7 @@ def main():
                 cols = st.columns(cols_per_row)
                 for col, rec in zip(cols, row):
                     with col:
-                        show_image(rec["image_path"], use_container_width=True)
+                        show_record_thumbnail(rec["image_path"], use_container_width=True)
                         short_kw = rec["keywords"]
                         if len(short_kw) > 16:
                             short_kw = short_kw[:16] + "…"
@@ -884,6 +977,7 @@ def main():
         )
 
     st.divider()
+    render_storage_footer()
     st.caption(
         "💡 사용 팁: 버튼을 누르면 새 창에서 ChatGPT 웹사이트가 열리고, "
         "준비된 질문이 입력창에 자동으로 채워집니다. (로그인 후 전송 버튼만 누르면 대화 시작!)"

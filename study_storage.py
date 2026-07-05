@@ -3,8 +3,8 @@
 # -----------------------------------------------------------------------------
 #  - 클라우드(Streamlit Cloud)에 Supabase 비밀키(secrets)가 설정되어 있으면
 #    Supabase(Postgres + Storage)에 사진과 기록을 "영구 보존" 합니다.
-#  - 비밀키가 없으면(예: 내 컴퓨터에서 테스트할 때) 기존처럼 로컬 SQLite와
-#    saved_images 폴더를 사용합니다.
+#  - 비밀키가 없으면(예: 내 컴퓨터에서 테스트할 때) 공통 저장소(MyKnowledge_DB)의
+#    data/english/study_log.db 와 data/attachments/english/ 를 사용합니다.
 #
 #  보안 (Supabase 모드):
 #  - Storage 버킷은 Private 로 두고, DB에는 파일명(객체 경로)만 저장합니다.
@@ -13,23 +13,42 @@
 
 import os
 import re
+import sys
 import uuid
+import shutil
 import sqlite3
 import random
 import mimetypes
+import io
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from pathlib import Path
+from typing import Any, Optional
 
 import streamlit as st
+from PIL import Image, UnidentifiedImageError
 
-# ----- 로컬(폴백) 저장 설정 -----
-DB_PATH = "study_log.db"
-IMAGE_DIR = "saved_images"
+# ----- 로컬(폴백) 저장 설정 — 공통 저장소 경로 (Supabase 모드에서는 사용 안 함) -----
+_APP_DIR = Path(__file__).resolve().parent
+_WORKSPACE_ROOT = _APP_DIR.parent
+_LEGACY_DB_PATH = _APP_DIR / "study_log.db"
+_LEGACY_IMAGE_DIR = _APP_DIR / "saved_images"
+
+DB_PATH = ""
+IMAGE_DIR = ""
+_local_paths_ready = False
+
+if str(_WORKSPACE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_WORKSPACE_ROOT))
 
 # study_storage v2 — Streamlit Cloud 모듈 캐시 갱신용
 BUCKET = "study-images"          # Supabase Storage 버킷 이름
 TABLE = "study_records"          # Supabase 테이블 이름
 DEFAULT_SIGNED_URL_EXPIRES = 3600  # Signed URL 유효 시간(초). 기본 1시간
+ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+MIN_IMAGE_BYTES = 12
+INVALID_IMAGE_MESSAGE = "정상 이미지가 아닙니다. 다시 선택해 주세요."
 
 
 # -----------------------------------------------------------------------------
@@ -66,7 +85,105 @@ def backend_name() -> str:
     """현재 사용 중인 저장 방식 이름 (화면 안내용)."""
     if use_supabase():
         return "클라우드(Supabase) · Private + Signed URL"
-    return "로컬(SQLite) · 이 컴퓨터에만 저장"
+    _ensure_local_paths()
+    return "로컬 MyKnowledge_DB"
+
+
+def get_storage_info() -> dict[str, Any]:
+    """화면에 표시할 저장 경로 정보를 반환한다."""
+    if use_supabase():
+        return {
+            "mode": "supabase",
+            "label": "클라우드(Supabase) · Private + Signed URL",
+            "db_path": "",
+            "image_dir": "",
+        }
+    _ensure_local_paths()
+    return {
+        "mode": "local",
+        "label": "로컬 MyKnowledge_DB",
+        "db_path": DB_PATH,
+        "image_dir": IMAGE_DIR,
+    }
+
+
+def _migrate_legacy_local_data(db_path: Path, image_dir: Path) -> None:
+    """기존 프로젝트 폴더의 로컬 데이터를 공통 저장소로 복사한다(원본·기존 파일 보존)."""
+    if _LEGACY_DB_PATH.exists() and not db_path.exists():
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(_LEGACY_DB_PATH, db_path)
+
+    if _LEGACY_IMAGE_DIR.is_dir():
+        image_dir.mkdir(parents=True, exist_ok=True)
+        for item in _LEGACY_IMAGE_DIR.iterdir():
+            if not item.is_file():
+                continue
+            dest = image_dir / item.name
+            if not dest.exists():
+                shutil.copy2(item, dest)
+
+
+def _ensure_local_paths() -> None:
+    """로컬 모드일 때 공통 저장소 경로를 준비한다."""
+    global DB_PATH, IMAGE_DIR, _local_paths_ready
+    if _local_paths_ready or use_supabase():
+        return
+
+    from shared.storage_manager import (
+        ensure_common_layout,
+        get_attachment_dir,
+        get_category_dir,
+        register_dataset,
+    )
+
+    ensure_common_layout()
+    db_path = get_category_dir("english") / "study_log.db"
+    image_dir = get_attachment_dir("english")
+    _migrate_legacy_local_data(db_path, image_dir)
+
+    DB_PATH = str(db_path)
+    IMAGE_DIR = str(image_dir)
+    register_dataset(
+        app_name="영어회화",
+        category="english",
+        kind="sqlite",
+        path=db_path,
+        description="영어 학습 기록 DB",
+    )
+    register_dataset(
+        app_name="영어회화",
+        category="english",
+        kind="attachments",
+        path=image_dir,
+        description="영어 학습 이미지 첨부",
+    )
+    _local_paths_ready = True
+
+
+def _connect_local_db() -> sqlite3.Connection:
+    """로컬 SQLite 연결을 반환한다."""
+    _ensure_local_paths()
+    return sqlite3.connect(DB_PATH)
+
+
+def _is_local_image_path(image_path: str) -> bool:
+    """DB에 저장된 값이 로컬 파일 경로인지 판별한다."""
+    if not image_path:
+        return False
+    if use_supabase() and not os.path.isabs(image_path):
+        # Supabase 모드: DB에는 보통 파일명만 저장 (로컬 경로 아님)
+        if image_path.startswith("saved_images"):
+            return True
+        return False
+    if os.path.isabs(image_path):
+        return True
+    if IMAGE_DIR and image_path.startswith(IMAGE_DIR):
+        return True
+    if image_path.startswith(str(_LEGACY_IMAGE_DIR)):
+        return True
+    if image_path.startswith("saved_images"):
+        return True
+    return False
 
 # -----------------------------------------------------------------------------
 # 공통 유틸
@@ -92,7 +209,7 @@ def _storage_object_path(image_path: str) -> Optional[str]:
     """
     if not image_path:
         return None
-    if image_path.startswith(IMAGE_DIR) or os.path.isabs(image_path):
+    if _is_local_image_path(image_path):
         return None
     if image_path.startswith("http://") or image_path.startswith("https://"):
         marker = f"/{BUCKET}/"
@@ -118,6 +235,137 @@ def _extract_signed_url(response) -> str:
             if val:
                 return str(val)
     return ""
+
+
+def validate_image_bytes(file_bytes: bytes) -> tuple[bool, str]:
+    """이미지 바이트가 PIL 로 열 수 있는 정상 파일인지 검사한다."""
+    if not file_bytes:
+        return False, "empty file (0 bytes)"
+    if len(file_bytes) < MIN_IMAGE_BYTES:
+        return False, f"too small ({len(file_bytes)} bytes)"
+
+    try:
+        with Image.open(io.BytesIO(file_bytes)) as img:
+            img.verify()
+        with Image.open(io.BytesIO(file_bytes)) as img:
+            img.load()
+            fmt = (img.format or "unknown").upper()
+            if fmt not in {"JPEG", "PNG", "WEBP"}:
+                return False, f"unsupported format ({fmt})"
+        return True, fmt
+    except UnidentifiedImageError:
+        return False, "invalid image"
+    except Exception as exc:
+        return False, str(exc)
+
+
+def validate_upload(file_name: str, file_bytes: bytes) -> tuple[bool, str]:
+    """업로드 파일 확장자와 이미지 내용을 함께 검사한다."""
+    ext = os.path.splitext(file_name or "")[1].lower()
+    if ext not in ALLOWED_IMAGE_EXTENSIONS:
+        return False, "JPG, JPEG, PNG, WEBP 파일만 올릴 수 있습니다."
+
+    valid, reason = validate_image_bytes(file_bytes)
+    if not valid:
+        return False, INVALID_IMAGE_MESSAGE
+    return True, reason
+
+
+def read_local_image_bytes(image_path: str) -> Optional[bytes]:
+    """로컬 이미지 파일을 읽고, 정상 이미지일 때만 바이트를 반환한다."""
+    if not image_path or not os.path.isfile(image_path):
+        return None
+    try:
+        data = Path(image_path).read_bytes()
+    except OSError:
+        return None
+    valid, _ = validate_image_bytes(data)
+    if not valid:
+        return None
+    return data
+
+
+def _fetch_url_bytes(url: str, timeout: float = 8.0) -> Optional[bytes]:
+    """HTTP(S) URL 에서 이미지 바이트를 가져온다. 실패 시 None."""
+    try:
+        request = urllib.request.Request(
+            url,
+            headers={"User-Agent": "EnglishStudyApp/1.0"},
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read()
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return None
+
+
+def read_display_image_bytes(image_path: str) -> Optional[bytes]:
+    """
+    화면 표시용 이미지 바이트를 반환한다.
+    - 로컬: 파일을 읽어 PIL 검증
+    - Supabase: Signed URL 로 가져온 뒤 PIL 검증
+    깨진 이미지·접근 실패 시 None (앱 중단 없음).
+    """
+    if not (image_path or "").strip():
+        return None
+
+    if use_supabase():
+        src = resolve_image_src(image_path)
+        if not src.startswith(("http://", "https://")):
+            return None
+        data = _fetch_url_bytes(src)
+        if data is None:
+            return None
+        valid, _ = validate_image_bytes(data)
+        if not valid:
+            return None
+        return data
+
+    return read_local_image_bytes(image_path)
+
+
+def audit_local_attachments() -> list[dict]:
+    """
+    로컬 첨부 이미지 폴더의 파일 크기·유효성을 점검한다.
+    깨진 파일은 삭제하지 않고 목록으로만 반환한다.
+    """
+    if use_supabase():
+        return []
+
+    _ensure_local_paths()
+    results: list[dict] = []
+    image_dir = Path(IMAGE_DIR)
+    if not image_dir.is_dir():
+        return results
+
+    for path in sorted(image_dir.iterdir()):
+        if not path.is_file():
+            continue
+        size = path.stat().st_size
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            results.append(
+                {
+                    "name": path.name,
+                    "path": str(path),
+                    "size": size,
+                    "valid": False,
+                    "reason": str(exc),
+                }
+            )
+            continue
+
+        valid, reason = validate_image_bytes(data)
+        results.append(
+            {
+                "name": path.name,
+                "path": str(path),
+                "size": size,
+                "valid": valid,
+                "reason": reason,
+            }
+        )
+    return results
 
 
 def resolve_image_src(image_path: str) -> str:
@@ -160,8 +408,9 @@ def init_storage():
     """폴더/DB가 없으면 자동 생성 (로컬 모드). Supabase 모드는 사전 설정 사용."""
     if use_supabase():
         return  # 테이블/버킷은 README 가이드에 따라 미리 만들어 둠
+    _ensure_local_paths()
     os.makedirs(IMAGE_DIR, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect_local_db()
     try:
         conn.execute(
             """
@@ -197,6 +446,10 @@ def _unique_name(file_name: str) -> str:
 
 def _store_image(file_name: str, file_bytes: bytes) -> str:
     """사진을 저장하고, DB에 기록할 경로(로컬 경로 또는 Storage 객체 경로)를 돌려준다."""
+    valid, reason = validate_upload(file_name, file_bytes)
+    if not valid:
+        raise ValueError(reason)
+
     safe_name = _unique_name(file_name)
 
     if use_supabase():
@@ -209,6 +462,7 @@ def _store_image(file_name: str, file_bytes: bytes) -> str:
         )
         return safe_name  # Private 버킷: 파일명만 DB에 저장
     else:
+        _ensure_local_paths()
         os.makedirs(IMAGE_DIR, exist_ok=True)
         save_path = os.path.join(IMAGE_DIR, safe_name)
         with open(save_path, "wb") as f:
@@ -216,9 +470,15 @@ def _store_image(file_name: str, file_bytes: bytes) -> str:
         return save_path
 
 
-def save_study(keywords: str, file_name: str, file_bytes: bytes):
-    """학습 기록 한 건을 저장한다. (사진 파일 + 키워드 + 날짜)"""
-    image_path = _store_image(file_name, file_bytes)
+def save_study(keywords: str, file_name: Optional[str] = None, file_bytes: Optional[bytes] = None):
+    """학습 기록 한 건을 저장한다. 사진은 선택 사항, 키워드는 필수."""
+    keywords = (keywords or "").strip()
+    if not keywords:
+        raise ValueError("키워드를 입력해 주세요.")
+
+    image_path = ""
+    if file_name is not None and file_bytes is not None:
+        image_path = _store_image(file_name, file_bytes)
 
     if use_supabase():
         client = _client()
@@ -226,7 +486,7 @@ def save_study(keywords: str, file_name: str, file_bytes: bytes):
             {"keywords": keywords, "image_path": image_path}
         ).execute()
     else:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_local_db()
         try:
             conn.execute(
                 "INSERT INTO study_records (created_at, keywords, image_path) VALUES (?, ?, ?)",
@@ -239,6 +499,10 @@ def save_study(keywords: str, file_name: str, file_bytes: bytes):
 
 def update_study(record_id, keywords: str, file_name: str = None, file_bytes: bytes = None):
     """기존 학습 기록을 수정한다. (키워드는 항상, 사진은 새로 올린 경우에만 교체)"""
+    keywords = (keywords or "").strip()
+    if not keywords:
+        raise ValueError("키워드를 입력해 주세요.")
+
     new_path = None
     if file_name is not None and file_bytes is not None:
         new_path = _store_image(file_name, file_bytes)
@@ -250,7 +514,7 @@ def update_study(record_id, keywords: str, file_name: str = None, file_bytes: by
             payload["image_path"] = new_path
         client.table(TABLE).update(payload).eq("id", record_id).execute()
     else:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_local_db()
         try:
             if new_path is not None:
                 conn.execute(
@@ -273,7 +537,7 @@ def delete_study(record_id):
         client = _client()
         client.table(TABLE).delete().eq("id", record_id).execute()
     else:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_local_db()
         try:
             conn.execute("DELETE FROM study_records WHERE id = ?", (record_id,))
             conn.commit()
@@ -308,7 +572,7 @@ def fetch_all_records():
         )
         return [_normalize(r) for r in (res.data or [])]
     else:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_local_db()
         try:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
@@ -339,7 +603,7 @@ def fetch_random_recent_record(days: int = RECENT_REVIEW_DAYS):
             return None
         return _normalize(random.choice(rows))
     else:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_local_db()
         try:
             conn.row_factory = sqlite3.Row
             cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
@@ -364,7 +628,7 @@ def fetch_random_record():
             return None
         return _normalize(random.choice(rows))
     else:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_local_db()
         try:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
@@ -394,7 +658,7 @@ def fetch_review_record(min_days: int = 7):
             return None
         return _normalize(random.choice(rows))
     else:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_local_db()
         try:
             conn.row_factory = sqlite3.Row
             cutoff = (datetime.now() - timedelta(days=min_days)).strftime("%Y-%m-%d %H:%M:%S")
