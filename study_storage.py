@@ -42,7 +42,7 @@ _local_paths_ready = False
 if str(_WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKSPACE_ROOT))
 
-# study_storage v2 — Streamlit Cloud 모듈 캐시 갱신용
+# study_storage v3 — Streamlit Cloud 모듈 캐시 갱신용 (read_display_image_bytes)
 BUCKET = "study-images"          # Supabase Storage 버킷 이름
 TABLE = "study_records"          # Supabase 테이블 이름
 DEFAULT_SIGNED_URL_EXPIRES = 3600  # Signed URL 유효 시간(초). 기본 1시간
@@ -271,12 +271,34 @@ def validate_upload(file_name: str, file_bytes: bytes) -> tuple[bool, str]:
     return True, reason
 
 
+def _resolve_local_image_path(image_path: str) -> Optional[str]:
+    """DB에 저장된 다양한 image_path 형식을 실제 파일 경로로 해석한다."""
+    if not (image_path or "").strip():
+        return None
+    if os.path.isfile(image_path):
+        return image_path
+
+    _ensure_local_paths()
+    base = os.path.basename(image_path)
+    candidates = [
+        os.path.join(IMAGE_DIR, base) if IMAGE_DIR else "",
+        os.path.join(str(_LEGACY_IMAGE_DIR), base),
+        os.path.join(_APP_DIR, image_path) if image_path.startswith("saved_images") else "",
+        image_path,
+    ]
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    return None
+
+
 def read_local_image_bytes(image_path: str) -> Optional[bytes]:
     """로컬 이미지 파일을 읽고, 정상 이미지일 때만 바이트를 반환한다."""
-    if not image_path or not os.path.isfile(image_path):
+    resolved = _resolve_local_image_path(image_path)
+    if not resolved:
         return None
     try:
-        data = Path(image_path).read_bytes()
+        data = Path(resolved).read_bytes()
     except OSError:
         return None
     valid, _ = validate_image_bytes(data)
@@ -378,7 +400,8 @@ def resolve_image_src(image_path: str) -> str:
         return ""
 
     if not use_supabase():
-        return image_path
+        resolved = _resolve_local_image_path(image_path)
+        return resolved or image_path
 
     obj_path = _storage_object_path(image_path)
     if not obj_path:

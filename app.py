@@ -443,13 +443,28 @@ def show_large_upload_image(image_bytes: bytes, file_name: str):
 
 def show_large_detail_image(image_path: str) -> str:
     """상세/수정 화면용 — 교재 사진을 크게 보여준다. 표시용 URL/경로를 반환."""
-    image_bytes = storage.read_display_image_bytes(image_path)
-    if image_bytes is None:
-        st.warning("이미지를 표시할 수 없습니다")
-        return ""
+    reader = getattr(storage, "read_display_image_bytes", None)
+    image_bytes = None
+    if callable(reader):
+        try:
+            image_bytes = reader(image_path)
+        except Exception:
+            image_bytes = None
 
-    file_name = os.path.basename(image_path) or "image.jpg"
-    show_large_upload_image(image_bytes, file_name)
+    if image_bytes is not None:
+        file_name = os.path.basename(image_path) or "image.jpg"
+        show_large_upload_image(image_bytes, file_name)
+    else:
+        src = storage.resolve_image_src(image_path)
+        if src:
+            try:
+                st.image(src, use_container_width=True)
+            except Exception:
+                st.warning("이미지를 표시할 수 없습니다")
+                return ""
+        else:
+            st.warning("이미지를 표시할 수 없습니다")
+            return ""
 
     src = storage.resolve_image_src(image_path)
     if src and src.startswith(("http://", "https://")):
@@ -479,13 +494,30 @@ def link_button(label: str, url: str):
 
 def show_image(image_path: str, **kwargs):
     """로컬 경로 또는 Supabase Signed URL 이미지를 검증한 뒤 표시한다."""
-    image_bytes = storage.read_display_image_bytes(image_path)
-    if image_bytes is None:
-        if (image_path or "").strip():
+    if not (image_path or "").strip():
+        return
+
+    reader = getattr(storage, "read_display_image_bytes", None)
+    if callable(reader):
+        try:
+            image_bytes = reader(image_path)
+        except Exception:
+            image_bytes = None
+        if image_bytes is None:
+            st.warning("이미지를 표시할 수 없습니다")
+            return
+        try:
+            st.image(io.BytesIO(image_bytes), **kwargs)
+        except Exception:
             st.warning("이미지를 표시할 수 없습니다")
         return
+
+    src = storage.resolve_image_src(image_path)
+    if not src:
+        st.warning("이미지를 표시할 수 없습니다")
+        return
     try:
-        st.image(io.BytesIO(image_bytes), **kwargs)
+        st.image(src, **kwargs)
     except Exception:
         st.warning("이미지를 표시할 수 없습니다")
 
@@ -898,7 +930,13 @@ def main():
                 cols = st.columns(cols_per_row)
                 for col, rec in zip(cols, row):
                     with col:
-                        show_record_thumbnail(rec["image_path"], use_container_width=True)
+                        try:
+                            show_record_thumbnail(rec["image_path"], use_container_width=True)
+                        except Exception:
+                            st.markdown(
+                                '<div class="record-no-image">📝 사진 표시 오류</div>',
+                                unsafe_allow_html=True,
+                            )
                         short_kw = rec["keywords"]
                         if len(short_kw) > 16:
                             short_kw = short_kw[:16] + "…"
