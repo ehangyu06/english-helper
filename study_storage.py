@@ -49,7 +49,7 @@ _local_paths_ready = False
 if str(_WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKSPACE_ROOT))
 
-# study_storage v4 — iOS camera photo upload fix (normalize_image_bytes)
+# study_storage v5 — pagination, thumbnails, 960px uploads (Streamlit cache bust)
 BUCKET = "study-images"          # Supabase Storage 버킷 이름
 TABLE = "study_records"          # Supabase 테이블 이름
 DEFAULT_SIGNED_URL_EXPIRES = 3600  # Signed URL 유효 시간(초). 기본 1시간

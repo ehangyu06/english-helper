@@ -33,7 +33,30 @@ MAX_KEYWORDS = 10
 RECENT_REVIEW_DAYS = 14
 MIXED_QUIZ_TARGET = 8       # 무작위 퀴즈에 넣을 표현 개수 목표
 MIXED_QUIZ_MAX_PER_RECORD = 2  # 학습 기록(날짜)당 최대 표현 수
-RECORDS_PAGE_SIZE = storage.DEFAULT_RECORDS_PAGE_SIZE
+# Streamlit Cloud 가 예전 study_storage 모듈을 캐시할 때도 앱이 죽지 않도록 기본값 사용
+RECORDS_PAGE_SIZE = getattr(storage, "DEFAULT_RECORDS_PAGE_SIZE", 24)
+
+
+def fetch_records_page_compat(page: int, page_size: int) -> tuple[list, int]:
+    """페이지 조회 — 구버전 study_storage 는 fetch_all_records 로 대체."""
+    fn = getattr(storage, "fetch_records_page", None)
+    if callable(fn):
+        return fn(page, page_size)
+    all_records = storage.fetch_all_records()
+    total = len(all_records)
+    start = max(0, (max(1, page) - 1) * page_size)
+    return all_records[start : start + page_size], total
+
+
+def fetch_record_by_id_compat(record_id):
+    """단건 조회 — 구버전 study_storage 호환."""
+    fn = getattr(storage, "fetch_record_by_id", None)
+    if callable(fn):
+        return fn(record_id)
+    for rec in storage.fetch_all_records():
+        if rec.get("id") == record_id:
+            return rec
+    return None
 
 
 def prepare_upload_image(file_bytes: bytes, file_name: str):
@@ -395,7 +418,18 @@ def show_large_upload_image(image_bytes: bytes, file_name: str):
 @st.cache_data(ttl=3600, show_spinner=False, max_entries=300)
 def _cached_thumbnail_data_uri(image_path: str) -> str:
     """로컬 모드 목록 썸네일 — 경로별 메모이제이션."""
-    return storage.thumbnail_data_uri(image_path)
+    fn = getattr(storage, "thumbnail_data_uri", None)
+    if callable(fn):
+        return fn(image_path)
+    reader = getattr(storage, "read_display_image_bytes", None)
+    if callable(reader):
+        try:
+            raw = reader(image_path)
+            if raw:
+                return f"data:image/jpeg;base64,{base64.b64encode(raw).decode('ascii')}"
+        except Exception:
+            pass
+    return ""
 
 
 @st.cache_data(ttl=3600, show_spinner=False, max_entries=48)
@@ -800,7 +834,7 @@ def render_records_library() -> None:
     page = int(st.session_state["records_page"])
 
     try:
-        records, total = storage.fetch_records_page(page, RECORDS_PAGE_SIZE)
+        records, total = fetch_records_page_compat(page, RECORDS_PAGE_SIZE)
     except Exception as e:
         st.error(f"기록을 불러오는 중 오류가 발생했어요: {e}")
         return
@@ -823,7 +857,7 @@ def render_records_library() -> None:
     if selected_id is not None:
         selected = None
         try:
-            selected = storage.fetch_record_by_id(selected_id)
+            selected = fetch_record_by_id_compat(selected_id)
         except Exception:
             selected = None
         if selected is not None:
