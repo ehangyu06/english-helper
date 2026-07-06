@@ -110,6 +110,40 @@ class StudyStorageTests(unittest.TestCase):
         self.assertIsNone(storage.read_display_image_bytes(str(broken)))
 
     @patch.object(storage, "use_supabase", return_value=False)
+    def test_normalize_png_screenshot_to_small_jpeg(self, _mock_sb):
+        """스크린샷(PNG)도 작은 JPEG 로 저장되어 용량을 줄인다."""
+        buf = io.BytesIO()
+        Image.new("RGB", (2048, 1536), color=(240, 240, 240)).save(buf, format="PNG")
+        out_bytes, out_name = storage.normalize_image_bytes(buf.getvalue(), "screenshot.png")
+        self.assertEqual(out_name.endswith(".jpg"), True)
+        self.assertLess(len(out_bytes), len(buf.getvalue()))
+        with Image.open(io.BytesIO(out_bytes)) as img:
+            img.load()
+            self.assertEqual(img.format, "JPEG")
+            self.assertLessEqual(max(img.size), storage.MAX_UPLOAD_LONG_EDGE)
+
+    @patch.object(storage, "use_supabase", return_value=False)
+    def test_normalize_large_iphone_jpeg(self, _mock_sb):
+        """아이폰 카메라급 고해상도 JPEG도 업로드 정규화가 가능해야 한다."""
+        buf = io.BytesIO()
+        Image.new("RGB", (4032, 3024), color=(120, 80, 40)).save(buf, format="JPEG", quality=90)
+        raw = buf.getvalue()
+        out_bytes, out_name = storage.normalize_image_bytes(raw, "IMG_1234.jpeg")
+        self.assertTrue(out_name.endswith(".jpg"))
+        self.assertTrue(len(out_bytes) > storage.MIN_IMAGE_BYTES)
+        with Image.open(io.BytesIO(out_bytes)) as img:
+            img.load()
+            self.assertLessEqual(max(img.size), storage.MAX_UPLOAD_LONG_EDGE)
+
+    @patch.object(storage, "use_supabase", return_value=False)
+    def test_normalize_detects_jpeg_without_extension(self, _mock_sb):
+        buf = io.BytesIO()
+        Image.new("RGB", (200, 150), color=(10, 20, 30)).save(buf, format="JPEG")
+        out_bytes, out_name = storage.normalize_image_bytes(buf.getvalue(), "image")
+        self.assertTrue(out_name.endswith(".jpg"))
+        self.assertTrue(out_bytes)
+
+    @patch.object(storage, "use_supabase", return_value=False)
     def test_get_storage_info_paths(self, _mock_sb):
         info = storage.get_storage_info()
         self.assertEqual(info["mode"], "local")

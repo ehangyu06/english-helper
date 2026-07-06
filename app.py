@@ -25,7 +25,6 @@ from typing import Optional
 
 import streamlit as st
 import streamlit.components.v1 as components
-from PIL import Image, ImageOps
 
 import study_storage as storage  # 저장 백엔드 (로컬 SQLite / 클라우드 Supabase 자동 전환)
 
@@ -38,47 +37,10 @@ MIXED_QUIZ_MAX_PER_RECORD = 2  # 학습 기록(날짜)당 최대 표현 수
 
 def prepare_upload_image(file_bytes: bytes, file_name: str):
     """
-    아이폰/아이패드 사진의 회전(EXIF)을 픽셀에 반영하고,
-    위치·촬영 정보 등 메타데이터는 제거한 뒤 저장용 바이트를 만든다.
+    아이폰/아이패드 사진을 저장용으로 정규화한다.
     비정상 파일이면 ValueError 를 던진다.
     """
-    ok, err = storage.validate_upload(file_name, file_bytes)
-    if not ok:
-        raise ValueError(err)
-
-    try:
-        img = Image.open(io.BytesIO(file_bytes))
-        img = ImageOps.exif_transpose(img)
-
-        ext = os.path.splitext(file_name)[1].lower()
-        if ext in (".jpg", ".jpeg"):
-            fmt, out_ext = "JPEG", ".jpg"
-        elif ext == ".webp":
-            fmt, out_ext = "WEBP", ".webp"
-        else:
-            fmt, out_ext = "PNG", ".png"
-
-        # EXIF/GPS 등 메타데이터 제거 — 픽셀만 새 이미지로 복사
-        if img.mode in ("RGBA", "P") and fmt == "JPEG":
-            img = img.convert("RGB")
-        clean = Image.new(img.mode, img.size)
-        clean.putdata(list(img.getdata()))
-
-        buf = io.BytesIO()
-        if fmt == "JPEG":
-            clean.save(buf, format=fmt, quality=85, optimize=True)
-        else:
-            clean.save(buf, format=fmt)
-        base = os.path.splitext(file_name)[0]
-        out_bytes = buf.getvalue()
-        ok, err = storage.validate_image_bytes(out_bytes)
-        if not ok:
-            raise ValueError(storage.INVALID_IMAGE_MESSAGE)
-        return out_bytes, f"{base}{out_ext}"
-    except ValueError:
-        raise
-    except Exception:
-        raise ValueError(storage.INVALID_IMAGE_MESSAGE)
+    return storage.normalize_image_bytes(file_bytes, file_name)
 
 
 # -----------------------------------------------------------------------------
@@ -563,7 +525,7 @@ def render_detail(rec: dict):
 
     replace = st.file_uploader(
         "사진 교체 (선택 사항 — 새 사진을 올리면 교체됩니다)",
-        type=["jpg", "jpeg", "png", "webp"],
+        type=["jpg", "jpeg", "png", "webp", "heic", "heif"],
         key=f"edit_img_{rid}",
     )
     link_button(
@@ -829,8 +791,8 @@ def main():
         # 저장할 때마다 form_round가 1씩 늘어나며, 위젯 key가 바뀌어 입력칸이 깨끗하게 초기화됩니다.
         rnd = st.session_state["form_round"]
         uploaded = st.file_uploader(
-            "교재 사진 업로드 (선택 — JPG/PNG/WEBP)",
-            type=["jpg", "jpeg", "png", "webp"],
+            "교재 사진 업로드 (선택 — JPG/PNG/WEBP/HEIC)",
+            type=["jpg", "jpeg", "png", "webp", "heic", "heif"],
             key=f"uploader_{rnd}",
         )
 

@@ -27,7 +27,14 @@ from pathlib import Path
 from typing import Any, Optional
 
 import streamlit as st
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
+
+try:
+    import pillow_heif
+
+    pillow_heif.register_heif_opener()
+except ImportError:
+    pass
 
 # ----- 로컬(폴백) 저장 설정 — 공통 저장소 경로 (Supabase 모드에서는 사용 안 함) -----
 _APP_DIR = Path(__file__).resolve().parent
@@ -42,11 +49,13 @@ _local_paths_ready = False
 if str(_WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKSPACE_ROOT))
 
-# study_storage v3 — Streamlit Cloud 모듈 캐시 갱신용 (read_display_image_bytes)
+# study_storage v4 — iOS camera photo upload fix (normalize_image_bytes)
 BUCKET = "study-images"          # Supabase Storage 버킷 이름
 TABLE = "study_records"          # Supabase 테이블 이름
 DEFAULT_SIGNED_URL_EXPIRES = 3600  # Signed URL 유효 시간(초). 기본 1시간
-ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
+MAX_UPLOAD_LONG_EDGE = 480
+JPEG_UPLOAD_QUALITY = 60
 MIN_IMAGE_BYTES = 12
 INVALID_IMAGE_MESSAGE = "정상 이미지가 아닙니다. 다시 선택해 주세요."
 
@@ -237,6 +246,34 @@ def _extract_signed_url(response) -> str:
     return ""
 
 
+def _detect_image_extension(file_bytes: bytes) -> Optional[str]:
+    """파일 내용으로 이미지 확장자를 추정한다 (iOS 사진 라이브러리 호환)."""
+    if len(file_bytes) < 12:
+        return None
+    if file_bytes[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    if file_bytes[:8] == b"\x89PNG\r\n\x1a\n":
+        return ".png"
+    if file_bytes[:4] == b"RIFF" and file_bytes[8:12] == b"WEBP":
+        return ".webp"
+    if file_bytes[4:8] == b"ftyp":
+        brand = file_bytes[8:12]
+        if brand in (b"heic", b"heix", b"hevc", b"mif1", b"msf1"):
+            return ".heic"
+    return None
+
+
+def _resolve_upload_extension(file_name: str, file_bytes: bytes) -> Optional[str]:
+    """업로드 파일명·내용을 바탕으로 허용된 확장자를 고른다."""
+    ext = os.path.splitext(file_name or "")[1].lower()
+    if ext in ALLOWED_IMAGE_EXTENSIONS:
+        return ext
+    detected = _detect_image_extension(file_bytes)
+    if detected in ALLOWED_IMAGE_EXTENSIONS:
+        return detected
+    return None
+
+
 def validate_image_bytes(file_bytes: bytes) -> tuple[bool, str]:
     """이미지 바이트가 PIL 로 열 수 있는 정상 파일인지 검사한다."""
     if not file_bytes:
@@ -246,13 +283,11 @@ def validate_image_bytes(file_bytes: bytes) -> tuple[bool, str]:
 
     try:
         with Image.open(io.BytesIO(file_bytes)) as img:
-            img.verify()
-        with Image.open(io.BytesIO(file_bytes)) as img:
             img.load()
             fmt = (img.format or "unknown").upper()
-            if fmt not in {"JPEG", "PNG", "WEBP"}:
-                return False, f"unsupported format ({fmt})"
-        return True, fmt
+            if fmt in {"JPEG", "PNG", "WEBP", "HEIF", "HEIC", "MPO"}:
+                return True, fmt
+            return False, f"unsupported format ({fmt})"
     except UnidentifiedImageError:
         return False, "invalid image"
     except Exception as exc:
@@ -261,14 +296,69 @@ def validate_image_bytes(file_bytes: bytes) -> tuple[bool, str]:
 
 def validate_upload(file_name: str, file_bytes: bytes) -> tuple[bool, str]:
     """업로드 파일 확장자와 이미지 내용을 함께 검사한다."""
-    ext = os.path.splitext(file_name or "")[1].lower()
-    if ext not in ALLOWED_IMAGE_EXTENSIONS:
-        return False, "JPG, JPEG, PNG, WEBP 파일만 올릴 수 있습니다."
+    ext = _resolve_upload_extension(file_name, file_bytes)
+    if not ext:
+        return False, "JPG, JPEG, PNG, WEBP, HEIC 파일만 올릴 수 있습니다."
 
     valid, reason = validate_image_bytes(file_bytes)
     if not valid:
         return False, INVALID_IMAGE_MESSAGE
     return True, reason
+
+
+def normalize_image_bytes(file_bytes: bytes, file_name: str) -> tuple[bytes, str]:
+    """
+    아이폰/아이패드 사진을 저장용으로 정규화한다.
+    - EXIF 회전 반영
+    - 해상도·용량 최소화 (클라우드 저장 공간 절약)
+    - EXIF/GPS 등 메타데이터 제거 (새 JPEG 로 저장)
+    """
+    ext = _resolve_upload_extension(file_name, file_bytes)
+    if not ext:
+        raise ValueError("JPG, JPEG, PNG, WEBP, HEIC 파일만 올릴 수 있습니다.")
+
+    try:
+        with Image.open(io.BytesIO(file_bytes)) as img:
+            img = ImageOps.exif_transpose(img)
+
+            if img.mode in ("RGBA", "LA") or (
+                img.mode == "P" and "transparency" in img.info
+            ):
+                background = Image.new("RGB", img.size, (255, 255, 255))
+                background.paste(img.convert("RGBA"), mask=img.convert("RGBA").split()[3])
+                img = background
+            elif img.mode != "RGB":
+                img = img.convert("RGB")
+
+            width, height = img.size
+            long_edge = max(width, height)
+            if long_edge > MAX_UPLOAD_LONG_EDGE:
+                scale = MAX_UPLOAD_LONG_EDGE / long_edge
+                img = img.resize(
+                    (max(1, int(width * scale)), max(1, int(height * scale))),
+                    Image.Resampling.LANCZOS,
+                )
+
+            buf = io.BytesIO()
+            img.save(
+                buf,
+                format="JPEG",
+                quality=JPEG_UPLOAD_QUALITY,
+                optimize=True,
+            )
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(INVALID_IMAGE_MESSAGE) from exc
+
+    out_bytes = buf.getvalue()
+    valid, _ = validate_image_bytes(out_bytes)
+    if not valid:
+        raise ValueError(INVALID_IMAGE_MESSAGE)
+
+    base = os.path.splitext(os.path.basename(file_name or "image"))[0]
+    base = re.sub(r"[^A-Za-z0-9._-]", "", base)[:30] or "img"
+    return out_bytes, f"{base}.jpg"
 
 
 def _resolve_local_image_path(image_path: str) -> Optional[str]:
