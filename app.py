@@ -709,7 +709,7 @@ def render_detail(rec: dict):
     """선택한 학습 기록 — 좌(큰 사진) / 우(숙어 입력) 2열 구성."""
     rid = rec["id"]
 
-    img_col, kw_col = st.columns([8, 2], gap="small")
+    img_col, kw_col = st.columns([8, 4], gap="small")
 
     with img_col:
         image_path = (rec.get("image_path") or "").strip()
@@ -1191,8 +1191,8 @@ def main():
             return kw
 
         if uploaded is not None and not upload_error:
-            # 사진(왼쪽 넓게) + 숙어 입력(오른쪽 좁게)
-            pcol, wcol = st.columns([5, 2], gap="small")
+            # 사진(왼쪽 넓게) + 숙어 입력(오른쪽)
+            pcol, wcol = st.columns([5, 4], gap="small")
             with pcol:
                 show_large_upload_image(fixed_bytes, fixed_name)
             with wcol:
