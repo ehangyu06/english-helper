@@ -15,7 +15,7 @@
 # =============================================================================
 
 import base64
-import io
+import html
 import json
 import os
 import random
@@ -33,6 +33,7 @@ MAX_KEYWORDS = 10
 RECENT_REVIEW_DAYS = 14
 MIXED_QUIZ_TARGET = 8       # 무작위 퀴즈에 넣을 표현 개수 목표
 MIXED_QUIZ_MAX_PER_RECORD = 2  # 학습 기록(날짜)당 최대 표현 수
+RECORDS_PAGE_SIZE = storage.DEFAULT_RECORDS_PAGE_SIZE
 
 
 def prepare_upload_image(file_bytes: bytes, file_name: str):
@@ -383,47 +384,221 @@ def inject_keyword_enter_navigation():
 
 
 def show_large_upload_image(image_bytes: bytes, file_name: str):
-    """업로드 직후 교재 사진을 크게 보여준다."""
-    valid, reason = storage.validate_image_bytes(image_bytes)
+    """업로드 직후 교재 사진 — 핀치 줌 뷰어."""
+    valid, _ = storage.validate_image_bytes(image_bytes)
     if not valid:
         st.warning("이미지를 표시할 수 없습니다")
         return
+    show_pinch_zoom_image(image_bytes=image_bytes, file_name=file_name, height=840)
 
-    ext = os.path.splitext(file_name)[1].lower()
+
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=300)
+def _cached_thumbnail_data_uri(image_path: str) -> str:
+    """로컬 모드 목록 썸네일 — 경로별 메모이제이션."""
+    return storage.thumbnail_data_uri(image_path)
+
+
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=48)
+def _cached_detail_image_bytes(image_path: str) -> Optional[bytes]:
+    """상세 보기용 원본 바이트 — 열 때마다 재다운로드 방지."""
+    if not (image_path or "").strip():
+        return None
+    reader = getattr(storage, "read_display_image_bytes", None)
+    if not callable(reader):
+        return None
+    try:
+        return reader(image_path)
+    except Exception:
+        return None
+
+
+def _mime_for_filename(file_name: str) -> str:
+    ext = os.path.splitext(file_name or "")[1].lower()
     if ext in (".jpg", ".jpeg"):
-        mime = "image/jpeg"
-    elif ext == ".webp":
-        mime = "image/webp"
+        return "image/jpeg"
+    if ext == ".webp":
+        return "image/webp"
+    return "image/png"
+
+
+def show_pinch_zoom_image(
+    *,
+    image_bytes: Optional[bytes] = None,
+    image_url: Optional[str] = None,
+    file_name: str = "image.jpg",
+    height: int = 1000,
+) -> None:
+    """
+    iPad Safari 핀치 줌·드래그·더블탭 리셋 지원 이미지 뷰어.
+    처음엔 사진 전체가 한 화면에 들어오고, 핀치로 확대한 뒤 손을 떼도 유지된다.
+    Mac Chrome/Safari: 휠 줌·드래그 지원.
+    """
+    if image_bytes:
+        mime = _mime_for_filename(file_name)
+        src = f"data:{mime};base64,{base64.b64encode(image_bytes).decode('ascii')}"
+    elif image_url:
+        src = image_url.strip()
     else:
-        mime = "image/png"
-    b64 = base64.b64encode(image_bytes).decode()
-    st.markdown(
-        f'<div class="upload-preview"><img src="data:{mime};base64,{b64}" alt="업로드한 교재 사진" /></div>',
-        unsafe_allow_html=True,
+        return
+
+    src_js = json.dumps(src)
+    stage_h = max(280, height - 56)
+    components.html(
+        f"""
+        <div class="pz-root">
+          <div class="pz-toolbar">
+            <button type="button" class="pz-btn" id="pzReset">원래대로</button>
+            <span class="pz-hint">두 손가락: 확대/축소 · 확대 후 드래그: 이동 · 더블탭: 전체 보기</span>
+          </div>
+          <div class="pz-stage" id="pzStage">
+            <img id="pzImg" src={src_js} alt="교재 사진" draggable="false" />
+          </div>
+        </div>
+        <style>
+          .pz-root {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; }}
+          .pz-toolbar {{ display:flex; align-items:center; gap:10px; margin-bottom:8px; flex-wrap:wrap; }}
+          .pz-btn {{
+            border:1px solid #2563eb; background:#fff; color:#2563eb; border-radius:8px;
+            padding:8px 14px; font-weight:600; font-size:14px; cursor:pointer;
+          }}
+          .pz-hint {{ color:#64748b; font-size:12px; }}
+          .pz-stage {{
+            overflow:hidden; touch-action:none; background:#f8fafc; border-radius:10px;
+            border:1px solid #e2e8f0; height:min({stage_h}px, 78vh);
+            display:flex; align-items:center; justify-content:center; cursor:grab;
+          }}
+          .pz-stage.dragging {{ cursor:grabbing; }}
+          #pzImg {{
+            max-width:100%; max-height:100%; object-fit:contain; transform-origin:center center;
+            will-change:transform; user-select:none; -webkit-user-drag:none;
+          }}
+        </style>
+        <script>
+        (function () {{
+          const stage = document.getElementById("pzStage");
+          const img = document.getElementById("pzImg");
+          const resetBtn = document.getElementById("pzReset");
+          const MIN_SCALE = 1;
+          const MAX_SCALE = 8;
+          let scale = MIN_SCALE, panX = 0, panY = 0;
+          let dragging = false, lastX = 0, lastY = 0, pinchDist = 0;
+          let pinchActive = false, touchMoved = false, lastTap = 0;
+
+          function clampScale(next) {{
+            return Math.min(MAX_SCALE, Math.max(MIN_SCALE, next));
+          }}
+          function apply() {{
+            if (scale <= MIN_SCALE) {{
+              scale = MIN_SCALE;
+              panX = 0;
+              panY = 0;
+            }}
+            img.style.transform = "translate(" + panX + "px," + panY + "px) scale(" + scale + ")";
+          }}
+          function reset() {{
+            scale = MIN_SCALE; panX = 0; panY = 0; apply();
+          }}
+          resetBtn.addEventListener("click", reset);
+          if (img.complete) reset();
+          else img.addEventListener("load", reset);
+
+          stage.addEventListener("wheel", function (e) {{
+            e.preventDefault();
+            const delta = e.deltaY < 0 ? 1.08 : 0.92;
+            scale = clampScale(scale * delta);
+            apply();
+          }}, {{ passive: false }});
+
+          stage.addEventListener("mousedown", function (e) {{
+            if (scale <= MIN_SCALE) return;
+            dragging = true; lastX = e.clientX; lastY = e.clientY;
+            stage.classList.add("dragging");
+          }});
+          window.addEventListener("mousemove", function (e) {{
+            if (!dragging) return;
+            panX += e.clientX - lastX; panY += e.clientY - lastY;
+            lastX = e.clientX; lastY = e.clientY; apply();
+          }});
+          window.addEventListener("mouseup", function () {{
+            dragging = false; stage.classList.remove("dragging");
+          }});
+
+          stage.addEventListener("touchstart", function (e) {{
+            if (e.touches.length === 2) {{
+              pinchActive = true;
+              touchMoved = true;
+              pinchDist = Math.hypot(
+                e.touches[0].clientX - e.touches[1].clientX,
+                e.touches[0].clientY - e.touches[1].clientY
+              );
+            }} else if (e.touches.length === 1) {{
+              touchMoved = false;
+              if (scale > MIN_SCALE) {{
+                dragging = true;
+                lastX = e.touches[0].clientX; lastY = e.touches[0].clientY;
+              }}
+            }}
+          }}, {{ passive: false }});
+
+          stage.addEventListener("touchmove", function (e) {{
+            touchMoved = true;
+            if (e.touches.length === 2) {{
+              e.preventDefault();
+              const dist = Math.hypot(
+                e.touches[0].clientX - e.touches[1].clientX,
+                e.touches[0].clientY - e.touches[1].clientY
+              );
+              if (pinchDist > 0) {{
+                scale = clampScale(scale * (dist / pinchDist));
+                apply();
+              }}
+              pinchDist = dist;
+            }} else if (dragging && e.touches.length === 1) {{
+              e.preventDefault();
+              panX += e.touches[0].clientX - lastX;
+              panY += e.touches[0].clientY - lastY;
+              lastX = e.touches[0].clientX; lastY = e.touches[0].clientY;
+              apply();
+            }}
+          }}, {{ passive: false }});
+
+          stage.addEventListener("touchend", function (e) {{
+            if (e.touches.length < 2) pinchDist = 0;
+            if (e.touches.length === 0) {{
+              dragging = false;
+              const wasPinch = pinchActive;
+              pinchActive = false;
+              if (wasPinch || touchMoved) {{
+                touchMoved = false;
+                return;
+              }}
+              if (e.changedTouches.length === 1) {{
+                const now = Date.now();
+                if (now - lastTap < 300) reset();
+                lastTap = now;
+              }}
+              touchMoved = false;
+            }}
+          }});
+        }})();
+        </script>
+        """,
+        height=height,
+        scrolling=False,
     )
 
 
 def show_large_detail_image(image_path: str) -> str:
-    """상세/수정 화면용 — 교재 사진을 크게 보여준다. 표시용 URL/경로를 반환."""
-    reader = getattr(storage, "read_display_image_bytes", None)
-    image_bytes = None
-    if callable(reader):
-        try:
-            image_bytes = reader(image_path)
-        except Exception:
-            image_bytes = None
+    """상세/수정 화면용 — 핀치 줌으로 교재 사진을 크게 보여준다."""
+    file_name = os.path.basename(image_path) or "image.jpg"
+    image_bytes = _cached_detail_image_bytes(image_path)
 
     if image_bytes is not None:
-        file_name = os.path.basename(image_path) or "image.jpg"
-        show_large_upload_image(image_bytes, file_name)
+        show_pinch_zoom_image(image_bytes=image_bytes, file_name=file_name, height=1000)
     else:
         src = storage.resolve_image_src(image_path)
         if src:
-            try:
-                st.image(src, use_container_width=True)
-            except Exception:
-                st.warning("이미지를 표시할 수 없습니다")
-                return ""
+            show_pinch_zoom_image(image_url=src, file_name=file_name, height=1000)
         else:
             st.warning("이미지를 표시할 수 없습니다")
             return ""
@@ -434,6 +609,48 @@ def show_large_detail_image(image_path: str) -> str:
     if src and os.path.exists(src):
         return src
     return ""
+
+
+def render_lazy_record_thumbnail(rec: dict) -> None:
+    """
+    목록용 썸네일 — Supabase 는 signed URL 을 브라우저가 lazy 로 받고,
+    로컬은 작은 data URI 캐시를 사용합니다 (전체 원본을 매번 읽지 않음).
+    """
+    image_path = (rec.get("image_path") or "").strip()
+    if not image_path:
+        st.markdown(
+            '<div class="record-no-image">📝 사진 없음</div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    if storage.use_supabase():
+        src = (rec.get("image_src") or storage.resolve_image_src(image_path) or "").strip()
+        if not src:
+            st.markdown(
+                '<div class="record-no-image">📝 사진 표시 오류</div>',
+                unsafe_allow_html=True,
+            )
+            return
+        st.markdown(
+            f'<img class="record-thumb" src="{html.escape(src, quote=True)}" '
+            f'loading="lazy" decoding="async" alt="학습 사진" />',
+            unsafe_allow_html=True,
+        )
+        return
+
+    uri = _cached_thumbnail_data_uri(image_path)
+    if not uri:
+        st.markdown(
+            '<div class="record-no-image">📝 사진 표시 오류</div>',
+            unsafe_allow_html=True,
+        )
+        return
+    st.markdown(
+        f'<img class="record-thumb" src="{html.escape(uri, quote=True)}" '
+        f'loading="lazy" decoding="async" alt="학습 사진" />',
+        unsafe_allow_html=True,
+    )
 
 
 def link_button(label: str, url: str):
@@ -454,60 +671,32 @@ def link_button(label: str, url: str):
         )
 
 
-def show_image(image_path: str, **kwargs):
-    """로컬 경로 또는 Supabase Signed URL 이미지를 검증한 뒤 표시한다."""
-    if not (image_path or "").strip():
-        return
-
-    reader = getattr(storage, "read_display_image_bytes", None)
-    if callable(reader):
-        try:
-            image_bytes = reader(image_path)
-        except Exception:
-            image_bytes = None
-        if image_bytes is None:
-            st.warning("이미지를 표시할 수 없습니다")
-            return
-        try:
-            st.image(io.BytesIO(image_bytes), **kwargs)
-        except Exception:
-            st.warning("이미지를 표시할 수 없습니다")
-        return
-
-    src = storage.resolve_image_src(image_path)
-    if not src:
-        st.warning("이미지를 표시할 수 없습니다")
-        return
-    try:
-        st.image(src, **kwargs)
-    except Exception:
-        st.warning("이미지를 표시할 수 없습니다")
-
-
-def show_record_thumbnail(image_path: str, **kwargs):
-    """누적 기록 목록용 썸네일 — 깨진 이미지가 있어도 나머지 기록은 계속 표시."""
-    if not (image_path or "").strip():
-        st.markdown(
-            '<div class="record-no-image">📝 사진 없음</div>',
-            unsafe_allow_html=True,
-        )
-        return
-    show_image(image_path, **kwargs)
-
-
-# -----------------------------------------------------------------------------
-# 학습 기록 상세보기 + 수정 (전체 화면 팝업)
-# -----------------------------------------------------------------------------
 def render_detail(rec: dict):
     """선택한 학습 기록 — 좌(큰 사진) / 우(숙어 입력) 2열 구성."""
     rid = rec["id"]
 
-    img_col, kw_col = st.columns([5, 2], gap="small")
+    img_col, kw_col = st.columns([8, 2], gap="small")
 
     with img_col:
-        if (rec.get("image_path") or "").strip():
-            src = show_large_detail_image(rec["image_path"])
-            if src and (src.startswith("http://") or src.startswith("https://")):
+        image_path = (rec.get("image_path") or "").strip()
+        if image_path:
+            file_name = os.path.basename(image_path) or "image.jpg"
+            image_bytes = _cached_detail_image_bytes(image_path)
+            if image_bytes is not None:
+                show_pinch_zoom_image(
+                    image_bytes=image_bytes, file_name=file_name, height=1000
+                )
+            else:
+                src = storage.resolve_image_src(image_path)
+                if src and src.startswith(("http://", "https://")):
+                    show_pinch_zoom_image(image_url=src, file_name=file_name, height=1000)
+                else:
+                    st.warning(
+                        "저장된 사진을 불러올 수 없습니다. "
+                        "아래에서 새 사진을 올려 교체해 주세요."
+                    )
+            src = storage.resolve_image_src(image_path)
+            if src and src.startswith(("http://", "https://")):
                 link_button("🔍 사진 원본 크게 보기 (새 창에서 확대)", src)
         else:
             st.markdown(
@@ -551,6 +740,8 @@ def render_detail(rec: dict):
                         storage.update_study(rid, new_keywords.strip(), fn, fb)
                     else:
                         storage.update_study(rid, new_keywords.strip())
+                    _cached_detail_image_bytes.clear()
+                    _cached_thumbnail_data_uri.clear()
                     st.session_state["detail_id"] = None
                     st.session_state["flash"] = "저장되었습니다."
                     st.rerun()
@@ -562,6 +753,7 @@ def render_detail(rec: dict):
     with c2:
         if st.button("🗑️ 삭제", use_container_width=True, key=f"del_{rid}"):
             st.session_state[f"confirm_del_{rid}"] = True
+            st.rerun()
 
     with c3:
         if st.button("닫기", use_container_width=True, key=f"close_{rid}"):
@@ -577,6 +769,8 @@ def render_detail(rec: dict):
                     storage.delete_study(rid)
                     st.session_state[f"confirm_del_{rid}"] = False
                     st.session_state["detail_id"] = None
+                    _cached_detail_image_bytes.clear()
+                    _cached_thumbnail_data_uri.clear()
                     st.session_state["flash"] = "기록을 삭제했어요."
                     st.rerun()
                 except Exception as e:
@@ -587,15 +781,107 @@ def render_detail(rec: dict):
                 st.rerun()
 
 
-if hasattr(st, "dialog"):
-    @st.dialog("📖 학습 기록 상세 / 수정", width="large")
-    def open_detail(rec: dict):
+# -----------------------------------------------------------------------------
+# 학습 기록 상세보기 + 수정 (페이지 안 인라인 패널 — iPad·dialog 호환)
+# -----------------------------------------------------------------------------
+def open_detail(rec: dict):
+    """dialog 대신 페이지 안 패널로 표시 (저장·삭제·업로드가 안정적으로 동작)."""
+    with st.container(border=True):
+        st.markdown("### 📖 학습 기록 상세 / 수정")
         render_detail(rec)
-else:
-    def open_detail(rec: dict):
-        with st.container(border=True):
-            render_detail(rec)
 
+
+def render_records_library() -> None:
+    """누적 학습 기록 — 페이지네이션 + lazy 썸네일."""
+    st.subheader("📚 그동안 누적된 학습 기록")
+    st.caption("사진을 누르면 크게 보면서 키워드·사진을 수정하거나 삭제할 수 있어요.")
+
+    st.session_state.setdefault("records_page", 1)
+    page = int(st.session_state["records_page"])
+
+    try:
+        records, total = storage.fetch_records_page(page, RECORDS_PAGE_SIZE)
+    except Exception as e:
+        st.error(f"기록을 불러오는 중 오류가 발생했어요: {e}")
+        return
+
+    if total <= 0:
+        st.info("아직 저장된 학습 기록이 없습니다. 위에서 첫 기록을 등록해 보세요!")
+        return
+
+    total_pages = max(1, (total + RECORDS_PAGE_SIZE - 1) // RECORDS_PAGE_SIZE)
+    if page > total_pages:
+        st.session_state["records_page"] = total_pages
+        st.rerun()
+
+    st.write(
+        f"총 **{total:,}건** · **{page}/{total_pages}** 페이지 "
+        f"(한 페이지 {RECORDS_PAGE_SIZE}개)"
+    )
+
+    selected_id = st.session_state.get("detail_id")
+    if selected_id is not None:
+        selected = None
+        try:
+            selected = storage.fetch_record_by_id(selected_id)
+        except Exception:
+            selected = None
+        if selected is not None:
+            open_detail(selected)
+            st.divider()
+        else:
+            st.session_state["detail_id"] = None
+
+    if total_pages > 1:
+        nav = st.columns([1, 1, 2, 1, 1])
+        with nav[0]:
+            if st.button("⏮ 처음", disabled=page <= 1, key="records_first", use_container_width=True):
+                st.session_state["detail_id"] = None
+                st.session_state["records_page"] = 1
+                st.rerun()
+        with nav[1]:
+            if st.button("◀ 이전", disabled=page <= 1, key="records_prev", use_container_width=True):
+                st.session_state["detail_id"] = None
+                st.session_state["records_page"] = page - 1
+                st.rerun()
+        with nav[3]:
+            if st.button("다음 ▶", disabled=page >= total_pages, key="records_next", use_container_width=True):
+                st.session_state["detail_id"] = None
+                st.session_state["records_page"] = page + 1
+                st.rerun()
+        with nav[4]:
+            if st.button("끝 ⏭", disabled=page >= total_pages, key="records_last", use_container_width=True):
+                st.session_state["detail_id"] = None
+                st.session_state["records_page"] = total_pages
+                st.rerun()
+    else:
+        st.caption("기록이 25건 이상이면 페이지 이동 버튼이 나타납니다.")
+
+    cols_per_row = 3
+    for i in range(0, len(records), cols_per_row):
+        row = records[i : i + cols_per_row]
+        cols = st.columns(cols_per_row)
+        for col, rec in zip(cols, row):
+            with col:
+                try:
+                    render_lazy_record_thumbnail(rec)
+                except Exception:
+                    st.markdown(
+                        '<div class="record-no-image">📝 사진 표시 오류</div>',
+                        unsafe_allow_html=True,
+                    )
+                short_kw = rec["keywords"]
+                if len(short_kw) > 16:
+                    short_kw = short_kw[:16] + "…"
+                if st.button(
+                    f"📝 {short_kw}",
+                    use_container_width=True,
+                    key=f"open_{rec['id']}",
+                    help=f"{rec['created_at']} · {rec['keywords']}",
+                ):
+                    st.session_state["detail_id"] = rec["id"]
+                    st.session_state.pop(f"confirm_del_{rec['id']}", None)
+                    st.rerun()
 
 # -----------------------------------------------------------------------------
 # 앱 비밀번호 잠금 (secrets [auth] password)
@@ -773,6 +1059,15 @@ def main():
             text-align: center;
             padding: 1rem;
         }
+        .record-thumb {
+            width: 100%;
+            height: 8rem;
+            object-fit: cover;
+            border-radius: 8px;
+            display: block;
+            background: #f1f5f9;
+            content-visibility: auto;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -874,52 +1169,7 @@ def main():
 
         st.divider()
 
-        st.subheader("📚 그동안 누적된 학습 기록")
-        st.caption("사진을 누르면 크게 보면서 키워드·사진을 수정하거나 삭제할 수 있어요.")
-        try:
-            records = storage.fetch_all_records()
-        except Exception as e:
-            records = []
-            st.error(f"기록을 불러오는 중 오류가 발생했어요: {e}")
-
-        if not records:
-            st.info("아직 저장된 학습 기록이 없습니다. 위에서 첫 기록을 등록해 보세요!")
-        else:
-            st.write(f"총 **{len(records)}건**의 기록이 저장되어 있습니다.")
-            cols_per_row = 3
-            for i in range(0, len(records), cols_per_row):
-                row = records[i : i + cols_per_row]
-                cols = st.columns(cols_per_row)
-                for col, rec in zip(cols, row):
-                    with col:
-                        try:
-                            show_record_thumbnail(rec["image_path"], use_container_width=True)
-                        except Exception:
-                            st.markdown(
-                                '<div class="record-no-image">📝 사진 표시 오류</div>',
-                                unsafe_allow_html=True,
-                            )
-                        short_kw = rec["keywords"]
-                        if len(short_kw) > 16:
-                            short_kw = short_kw[:16] + "…"
-                        if st.button(
-                            f"📝 {short_kw}",
-                            use_container_width=True,
-                            key=f"open_{rec['id']}",
-                            help=f"{rec['created_at']} · {rec['keywords']}",
-                        ):
-                            st.session_state["detail_id"] = rec["id"]
-                            st.rerun()
-
-            # 선택된 기록이 있으면 상세보기/수정 팝업을 띄운다.
-            if st.session_state.get("detail_id") is not None:
-                selected = next(
-                    (r for r in records if r["id"] == st.session_state["detail_id"]), None
-                )
-                if selected is not None:
-                    open_detail(selected)
-                else:
-                    st.session_state["detail_id"] = None
+        render_records_library()
 
     # =========================================================================
     # [우측] 빈칸 넣기 퀴즈 (ChatGPT)

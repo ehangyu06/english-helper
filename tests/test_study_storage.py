@@ -144,6 +144,32 @@ class StudyStorageTests(unittest.TestCase):
         self.assertTrue(out_bytes)
 
     @patch.object(storage, "use_supabase", return_value=False)
+    def test_fetch_records_page(self, _mock_sb):
+        for i in range(30):
+            storage.save_study(f"word{i}", "a.jpg", _jpeg_bytes())
+        page1, total = storage.fetch_records_page(1, 10)
+        page2, _ = storage.fetch_records_page(2, 10)
+        self.assertEqual(total, 30)
+        self.assertEqual(len(page1), 10)
+        self.assertEqual(len(page2), 10)
+        self.assertNotEqual(page1[0]["id"], page2[0]["id"])
+
+    @patch.object(storage, "use_supabase", return_value=False)
+    def test_fetch_record_by_id(self, _mock_sb):
+        storage.save_study("hello", "a.jpg", _jpeg_bytes())
+        records = storage.fetch_all_records()
+        found = storage.fetch_record_by_id(records[0]["id"])
+        self.assertIsNotNone(found)
+        self.assertEqual(found["keywords"], "hello")
+
+    @patch.object(storage, "use_supabase", return_value=False)
+    def test_thumbnail_data_uri_local(self, _mock_sb):
+        storage.save_study("thumb", "t.jpg", _jpeg_bytes())
+        rec = storage.fetch_all_records()[0]
+        uri = storage.thumbnail_data_uri(rec["image_path"])
+        self.assertTrue(uri.startswith("data:image/jpeg;base64,"))
+
+    @patch.object(storage, "use_supabase", return_value=False)
     def test_get_storage_info_paths(self, _mock_sb):
         info = storage.get_storage_info()
         self.assertEqual(info["mode"], "local")

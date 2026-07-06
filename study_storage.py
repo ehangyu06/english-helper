@@ -54,8 +54,11 @@ BUCKET = "study-images"          # Supabase Storage 버킷 이름
 TABLE = "study_records"          # Supabase 테이블 이름
 DEFAULT_SIGNED_URL_EXPIRES = 3600  # Signed URL 유효 시간(초). 기본 1시간
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
-MAX_UPLOAD_LONG_EDGE = 480
+MAX_UPLOAD_LONG_EDGE = 960
 JPEG_UPLOAD_QUALITY = 60
+THUMB_LONG_EDGE = 120
+THUMB_JPEG_QUALITY = 55
+DEFAULT_RECORDS_PAGE_SIZE = 24
 MIN_IMAGE_BYTES = 12
 INVALID_IMAGE_MESSAGE = "정상 이미지가 아닙니다. 다시 선택해 주세요."
 
@@ -435,6 +438,50 @@ def read_display_image_bytes(image_path: str) -> Optional[bytes]:
     return read_local_image_bytes(image_path)
 
 
+def read_thumbnail_bytes(image_path: str) -> Optional[bytes]:
+    """
+    목록용 작은 썸네일 JPEG 바이트.
+    Supabase 모드에서는 목록이 signed URL 을 브라우저에서 직접 받으므로 None 을 반환합니다.
+    """
+    if not (image_path or "").strip():
+        return None
+    if use_supabase():
+        return None
+
+    data = read_local_image_bytes(image_path)
+    if data is None:
+        return None
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            img = ImageOps.exif_transpose(img)
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            width, height = img.size
+            long_edge = max(width, height)
+            if long_edge > THUMB_LONG_EDGE:
+                scale = THUMB_LONG_EDGE / long_edge
+                img = img.resize(
+                    (max(1, int(width * scale)), max(1, int(height * scale))),
+                    Image.Resampling.LANCZOS,
+                )
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=THUMB_JPEG_QUALITY, optimize=True)
+            return buf.getvalue()
+    except Exception:
+        return None
+
+
+def thumbnail_data_uri(image_path: str) -> str:
+    """로컬 목록용 data URI 썸네일."""
+    raw = read_thumbnail_bytes(image_path)
+    if not raw:
+        return ""
+    import base64
+
+    b64 = base64.b64encode(raw).decode("ascii")
+    return f"data:image/jpeg;base64,{b64}"
+
+
 def audit_local_attachments() -> list[dict]:
     """
     로컬 첨부 이미지 폴더의 파일 크기·유효성을 점검한다.
@@ -694,6 +741,88 @@ def fetch_all_records():
             return [_normalize(dict(r)) for r in rows]
         finally:
             conn.close()
+
+
+def count_all_records() -> int:
+    """전체 학습 기록 건수."""
+    if use_supabase():
+        client = _client()
+        res = (
+            client.table(TABLE)
+            .select("id", count="exact")
+            .execute()
+        )
+        return int(res.count or 0)
+    conn = _connect_local_db()
+    try:
+        row = conn.execute("SELECT COUNT(*) AS c FROM study_records").fetchone()
+        return int(row[0] if row else 0)
+    finally:
+        conn.close()
+
+
+def fetch_records_page(page: int = 1, page_size: int = DEFAULT_RECORDS_PAGE_SIZE) -> tuple[list[dict], int]:
+    """
+    학습 기록을 페이지 단위로 가져온다.
+    반환: (현재 페이지 기록 목록, 전체 건수)
+    """
+    page = max(1, int(page or 1))
+    page_size = max(1, min(int(page_size or DEFAULT_RECORDS_PAGE_SIZE), 100))
+    offset = (page - 1) * page_size
+    total = count_all_records()
+
+    if use_supabase():
+        client = _client()
+        res = (
+            client.table(TABLE)
+            .select("*")
+            .order("created_at", desc=True)
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
+        rows = [_normalize(r) for r in (res.data or [])]
+        return rows, total
+
+    conn = _connect_local_db()
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT id, created_at, keywords, image_path
+            FROM study_records
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (page_size, offset),
+        ).fetchall()
+        return [_normalize(dict(r)) for r in rows], total
+    finally:
+        conn.close()
+
+
+def fetch_record_by_id(record_id) -> Optional[dict]:
+    """단일 학습 기록을 id 로 조회한다."""
+    if record_id is None:
+        return None
+    if use_supabase():
+        client = _client()
+        res = client.table(TABLE).select("*").eq("id", record_id).limit(1).execute()
+        rows = res.data or []
+        if not rows:
+            return None
+        return _normalize(rows[0])
+    conn = _connect_local_db()
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT id, created_at, keywords, image_path FROM study_records WHERE id = ?",
+            (record_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _normalize(dict(row))
+    finally:
+        conn.close()
 
 
 def fetch_today_records():
