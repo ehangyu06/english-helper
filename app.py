@@ -36,6 +36,27 @@ MIXED_QUIZ_MAX_PER_RECORD = 2  # 학습 기록(날짜)당 최대 표현 수
 # Streamlit Cloud 가 예전 study_storage 모듈을 캐시할 때도 앱이 죽지 않도록 기본값 사용
 RECORDS_PAGE_SIZE = getattr(storage, "DEFAULT_RECORDS_PAGE_SIZE", 24)
 
+# 오늘 학습 등록 — 저장 전 임시 입력 유지용 session_state 키
+DRAFT_KEY_PREFIX = "kw_draft"
+DRAFT_IMAGE_BYTES = "draft_image_bytes"
+DRAFT_IMAGE_NAME = "draft_image_name"
+DRAFT_UPLOAD_ERROR = "draft_upload_error"
+DRAFT_KEYWORDS = "draft_keywords"
+DRAFT_PROMPT_PREVIEW_OPEN = "draft_prompt_preview_open"
+DRAFT_CHATGPT_READY = "draft_chatgpt_ready"
+
+
+def draft_state_keys_to_clear() -> tuple[str, ...]:
+    """저장 성공 후 비울 draft 관련 session_state 키."""
+    return (
+        DRAFT_IMAGE_BYTES,
+        DRAFT_IMAGE_NAME,
+        DRAFT_UPLOAD_ERROR,
+        DRAFT_KEYWORDS,
+        DRAFT_PROMPT_PREVIEW_OPEN,
+        DRAFT_CHATGPT_READY,
+    )
+
 
 def fetch_records_page_compat(page: int, page_size: int) -> tuple[list, int]:
     """페이지 조회 — 구버전 study_storage 는 fetch_all_records 로 대체."""
@@ -121,14 +142,65 @@ def chatgpt_prompt_button(label: str, prompt: str, show_caption: bool = True):
         )
 
 
-def make_roleplay_prompt(keywords: str) -> str:
-    """[기능 1 & 2] 롤플레잉 + 힌트 유도용 프롬프트"""
+def external_url_button(label: str, url: str, *, bg_color: str = "#10a37f"):
+    """
+    새 창으로 URL을 여는 Streamlit 대체 버튼.
+    chatgpt_prompt_button(components.html)와 높이/스타일을 맞추기 위해 동일 방식으로 렌더링한다.
+    """
+    components.html(
+        f"""
+        <div style="margin:0.25rem 0">
+          <button id="extBtn" type="button" style="width:100%;padding:0.65rem 1rem;
+            background:{bg_color};color:#fff;border:none;border-radius:0.5rem;
+            font-weight:600;font-size:0.95rem;cursor:pointer; min-height:44px;">
+            {html.escape(label)}
+          </button>
+        </div>
+        <script>
+        (function () {{
+            const btn = document.getElementById('extBtn');
+            const url = {json.dumps(url)};
+            btn.onclick = function () {{
+                window.open(url, '_blank');
+            }};
+        }})();
+        </script>
+        """,
+        height=52,
+    )
+
+
+def build_roleplay_prompt(keywords: str, *, mode: str = "new") -> str:
+    """
+    롤플레잉 프롬프트 생성 공통 함수.
+
+    mode="new": 새 업로드 화면용
+    mode="review": 과거 기록(저장된 표현) 복습 화면용
+    """
+    kw = (keywords or "").strip()
+    if mode == "review":
+        return (
+            "안녕! 내가 예전에 공부했던 영어 표현들 중에서\n"
+            f"'{kw}'\n"
+            "라는 표현들을 다시 복습하고 싶어.\n\n"
+            "지금부터 이 표현들을 자연스럽게 사용할 수 있도록 나랑 가상의 롤플레잉 대화를 시작해줘.\n\n"
+            "먼저 나에게 상황을 영어로 제시하면서 질문을 던져줘.\n"
+            "내가 답변하면 내 문장을 자연스럽게 교정해주고,\n"
+            "표현들을 어떻게 더 자연스럽게 쓸 수 있는지도 알려줘."
+        )
+
+    # default: mode="new"
     return (
-        f"안녕! 내가 방금 영어 교재에서 '{keywords}'라는 표현들을 공부했어. "
+        f"안녕! 내가 방금 영어 교재에서 '{kw}'라는 표현들을 공부했어. "
         "지금부터 이 표현들을 자연스럽게 사용할 수 있도록 나랑 가상의 롤플레잉 대화를 시작해줘. "
         "먼저 나에게 상황을 영어로 제시하면서 질문을 던져줘. "
         "내가 답변하면 내 문장도 교정해줘."
     )
+
+
+def make_roleplay_prompt(keywords: str) -> str:
+    """기존 호출부 호환: 새 업로드 화면용 프롬프트."""
+    return build_roleplay_prompt(keywords, mode="new")
 
 
 def _quiz_rules_body() -> str:
@@ -309,6 +381,82 @@ def join_keywords(keyword_slots: list) -> str:
     return ", ".join(k.strip() for k in keyword_slots if k and str(k).strip())
 
 
+def has_draft_content(image_bytes: Optional[bytes], keyword_slots: list) -> bool:
+    """사진 또는 숙어가 임시 저장되어 있는지 (순수 함수 — 테스트용)."""
+    if image_bytes:
+        return True
+    return bool(join_keywords(keyword_slots).strip())
+
+
+def apply_clear_draft(session: dict, key_prefix: str = DRAFT_KEY_PREFIX) -> dict:
+    """draft session_state 초기화 (순수 함수 — 테스트용)."""
+    for i in range(MAX_KEYWORDS):
+        session.pop(f"{key_prefix}_{i}", None)
+    for key in draft_state_keys_to_clear():
+        session.pop(key, None)
+    session["form_round"] = int(session.get("form_round", 0)) + 1
+    return session
+
+
+def init_draft_session_state() -> None:
+    """오늘 학습 등록 폼의 임시 입력 session_state 기본값."""
+    st.session_state.setdefault(DRAFT_IMAGE_BYTES, None)
+    st.session_state.setdefault(DRAFT_IMAGE_NAME, None)
+    st.session_state.setdefault(DRAFT_UPLOAD_ERROR, None)
+    st.session_state.setdefault(DRAFT_KEYWORDS, [""] * MAX_KEYWORDS)
+    st.session_state.setdefault(DRAFT_PROMPT_PREVIEW_OPEN, False)
+    st.session_state.setdefault(DRAFT_CHATGPT_READY, False)
+
+
+def restore_keyword_widgets_from_draft(key_prefix: str) -> None:
+    """draft_keywords → 위젯 session_state (rerun 후 복원)."""
+    draft = st.session_state.get(DRAFT_KEYWORDS) or []
+    for i in range(MAX_KEYWORDS):
+        widget_key = f"{key_prefix}_{i}"
+        if widget_key in st.session_state:
+            continue
+        val = draft[i] if i < len(draft) else ""
+        if val:
+            st.session_state[widget_key] = val
+
+
+def save_keyword_widgets_to_draft(key_prefix: str) -> None:
+    """위젯 session_state → draft_keywords."""
+    st.session_state[DRAFT_KEYWORDS] = _keyword_values_from_state(key_prefix)
+
+
+def clear_draft_session_state() -> None:
+    """학습 기록 저장 성공 후에만 호출 — 임시 입력 전부 초기화."""
+    uploader_round = int(st.session_state.get("form_round", 0))
+    apply_clear_draft(st.session_state, DRAFT_KEY_PREFIX)
+    st.session_state.pop(f"draft_uploader_{uploader_round}", None)
+
+
+def has_active_draft() -> bool:
+    """화면에 '임시 입력 유지 중' 안내를 보여줄지."""
+    kw_slots = _keyword_values_from_state(DRAFT_KEY_PREFIX)
+    return has_draft_content(st.session_state.get(DRAFT_IMAGE_BYTES), kw_slots)
+
+
+def persist_upload_to_draft(file_bytes: bytes, file_name: str) -> None:
+    st.session_state[DRAFT_IMAGE_BYTES] = file_bytes
+    st.session_state[DRAFT_IMAGE_NAME] = file_name
+    st.session_state[DRAFT_UPLOAD_ERROR] = None
+
+
+def process_uploaded_file(uploaded) -> tuple[Optional[bytes], Optional[str], Optional[str]]:
+    """업로드 파일 정규화. (bytes, name, error)"""
+    if uploaded is None:
+        return None, None, None
+    try:
+        fixed_bytes, fixed_name = prepare_upload_image(
+            uploaded.getbuffer().tobytes(), uploaded.name
+        )
+        return fixed_bytes, fixed_name, None
+    except ValueError as exc:
+        return None, None, str(exc)
+
+
 def split_keywords(keywords: str) -> list:
     """저장된 키워드 문자열을 최대 10칸 목록으로 나눈다."""
     parts = [p.strip() for p in (keywords or "").split(",") if p.strip()]
@@ -340,15 +488,25 @@ def _visible_keyword_count(vals: list) -> int:
     return visible
 
 
-def _reveal_next_keyword_slot(key_prefix: str, index: int):
+def _reveal_next_keyword_slot(key_prefix: str, index: int, *, persist_draft: bool = False):
     """마지막 보이는 칸에 내용이 들어가면 다음 칸을 보이게 한다."""
     key = f"{key_prefix}_{index}"
     if str(st.session_state.get(key, "")).strip():
+        if persist_draft:
+            save_keyword_widgets_to_draft(key_prefix)
         st.rerun()
 
 
-def render_keyword_inputs(key_prefix: str, initial_values: list = None) -> list:
+def render_keyword_inputs(
+    key_prefix: str,
+    initial_values: list = None,
+    *,
+    persist_draft: bool = False,
+) -> list:
     """핵심 숙어/단어 — 입력할 때마다 다음 칸이 나타난다 (최대 10개)."""
+    if persist_draft:
+        restore_keyword_widgets_from_draft(key_prefix)
+
     vals = _keyword_values_from_state(key_prefix, initial_values)
     visible = _visible_keyword_count(vals)
 
@@ -365,12 +523,17 @@ def render_keyword_inputs(key_prefix: str, initial_values: list = None) -> list:
         if key not in st.session_state and initial_values and i < len(initial_values):
             kwargs["value"] = initial_values[i]
         if i == visible - 1 and visible < MAX_KEYWORDS:
-            kwargs["on_change"] = lambda idx=i, p=key_prefix: _reveal_next_keyword_slot(p, idx)
+            kwargs["on_change"] = lambda idx=i, p=key_prefix, pd=persist_draft: (
+                _reveal_next_keyword_slot(p, idx, persist_draft=pd)
+            )
 
         st.text_input(**kwargs)
 
     inject_keyword_enter_navigation()
-    return _keyword_values_from_state(key_prefix, initial_values)
+    result = _keyword_values_from_state(key_prefix, initial_values)
+    if persist_draft:
+        save_keyword_widgets_to_draft(key_prefix)
+    return result
 
 
 def inject_keyword_enter_navigation():
@@ -751,12 +914,35 @@ def render_detail(rec: dict):
         type=["jpg", "jpeg", "png", "webp", "heic", "heif"],
         key=f"edit_img_{rid}",
     )
-    link_button(
-        "🔁 이 기록으로 빈칸 퀴즈 풀기",
-        build_chatgpt_url(
-            make_quiz_prompt(new_keywords or rec["keywords"], rec["created_at"])
-        ),
-    )
+
+    keywords_for_prompt = (new_keywords or rec.get("keywords") or "").strip()
+    review_roleplay_prompt = None
+    if keywords_for_prompt:
+        review_roleplay_prompt = build_roleplay_prompt(keywords_for_prompt, mode="review")
+
+    # iPad에서 누르기 쉽게 큰 버튼 2개 (가로)
+    btn1, btn2 = st.columns(2, gap="small")
+    with btn1:
+        if review_roleplay_prompt:
+            chatgpt_prompt_button(
+                "💬 이 기록으로 롤플레잉 대화하기",
+                review_roleplay_prompt,
+                show_caption=False,
+            )
+        else:
+            st.info("이 기록에는 롤플레잉에 사용할 표현이 없습니다.")
+    with btn2:
+        external_url_button(
+            "🔁 이 기록으로 빈칸 퀴즈 풀기",
+            build_chatgpt_url(
+                make_quiz_prompt(keywords_for_prompt, rec["created_at"])
+            ),
+            bg_color="#7c3aed",
+        )
+
+    if review_roleplay_prompt:
+        with st.expander("🔎 ChatGPT에게 전달될 프롬프트 미리보기 (롤플레잉)", expanded=False):
+            st.code(review_roleplay_prompt, language="text")
 
     st.divider()
     c1, c2, c3 = st.columns(3)
@@ -1001,9 +1187,10 @@ def main():
 
     render_logout_control()
 
-    st.session_state.setdefault("form_round", 0)   # 저장 후 입력칸 초기화용
+    st.session_state.setdefault("form_round", 0)   # 저장 성공 후 uploader 위젯 초기화용
     st.session_state.setdefault("detail_id", None)  # 상세보기 중인 기록 id
     st.session_state.setdefault("flash", None)      # 한 번 보여줄 안내 메시지
+    init_draft_session_state()
 
     st.title("🗣️ AI 시각 연상 영어 회화 보조 프로그램")
     st.caption(
@@ -1117,49 +1304,56 @@ def main():
     with left:
         st.subheader("📷 오늘의 학습 등록 & 실전 연습")
 
-        # 저장할 때마다 form_round가 1씩 늘어나며, 위젯 key가 바뀌어 입력칸이 깨끗하게 초기화됩니다.
-        rnd = st.session_state["form_round"]
+        if has_active_draft():
+            st.caption(
+                "📝 **임시 입력 유지 중** — 저장에 성공하기 전까지 "
+                "이 기기에서 사진·숙어·미리보기 상태를 유지합니다."
+            )
+
+        uploader_round = st.session_state["form_round"]
         uploaded = st.file_uploader(
             "교재 사진 업로드 (선택 — JPG/PNG/WEBP/HEIC)",
             type=["jpg", "jpeg", "png", "webp", "heic", "heif"],
-            key=f"uploader_{rnd}",
+            key=f"draft_uploader_{uploader_round}",
         )
 
-        fixed_bytes, fixed_name = (None, None)
-        upload_error = None
         if uploaded is not None:
-            try:
-                fixed_bytes, fixed_name = prepare_upload_image(
-                    uploaded.getbuffer().tobytes(), uploaded.name
-                )
-            except ValueError as exc:
-                upload_error = str(exc)
-                fixed_bytes, fixed_name = None, None
+            new_bytes, new_name, new_error = process_uploaded_file(uploaded)
+            if new_error:
+                st.session_state[DRAFT_UPLOAD_ERROR] = new_error
+            else:
+                persist_upload_to_draft(new_bytes, new_name)
+
+        draft_bytes = st.session_state.get(DRAFT_IMAGE_BYTES)
+        draft_name = st.session_state.get(DRAFT_IMAGE_NAME) or "image.jpg"
+        upload_error = st.session_state.get(DRAFT_UPLOAD_ERROR)
 
         def write_pane():
             """키워드 입력 + 저장/연습 버튼 묶음. (사진 옆 고정 패널로도, 단독으로도 사용)"""
             if upload_error:
                 st.error(upload_error)
 
-            kw_slots = render_keyword_inputs(f"kw_{rnd}")
+            kw_slots = render_keyword_inputs(DRAFT_KEY_PREFIX, persist_draft=True)
             kw = join_keywords(kw_slots)
+            st.session_state[DRAFT_CHATGPT_READY] = bool(kw)
+
             if st.button(
                 "💾 학습 기록 저장하기",
                 use_container_width=True,
-                key=f"save_{rnd}",
+                key="draft_save_btn",
                 type="primary",
             ):
                 if not kw:
                     st.warning("핵심 키워드를 최소 1개 이상 입력해 주세요.")
-                elif uploaded is not None and upload_error:
+                elif draft_bytes is not None and upload_error:
                     st.error(upload_error)
                 else:
                     try:
-                        if uploaded is not None and fixed_bytes is not None:
-                            storage.save_study(kw, fixed_name, fixed_bytes)
+                        if draft_bytes is not None:
+                            storage.save_study(kw, draft_name, draft_bytes)
                         else:
                             storage.save_study(kw)
-                        st.session_state["form_round"] += 1
+                        clear_draft_session_state()
                         st.session_state["flash"] = "저장되었습니다."
                         st.rerun()
                     except ValueError as e:
@@ -1182,19 +1376,23 @@ def main():
                     use_container_width=True,
                     disabled=True,
                     help="먼저 키워드를 입력하세요.",
-                    key=f"practice_disabled_{rnd}",
+                    key="draft_practice_disabled",
                 )
 
-            with st.expander("🔎 ChatGPT에게 전달될 프롬프트 미리보기"):
+            st.toggle(
+                "🔎 ChatGPT에게 전달될 프롬프트 미리보기",
+                key=DRAFT_PROMPT_PREVIEW_OPEN,
+            )
+            if st.session_state.get(DRAFT_PROMPT_PREVIEW_OPEN):
                 preview_kw = kw if kw else "{입력한 키워드}"
                 st.code(make_roleplay_prompt(preview_kw), language="text")
             return kw
 
-        if uploaded is not None and not upload_error:
+        if draft_bytes is not None and not upload_error:
             # 사진(왼쪽 넓게) + 숙어 입력(오른쪽)
             pcol, wcol = st.columns([7, 4], gap="small")
             with pcol:
-                show_large_upload_image(fixed_bytes, fixed_name)
+                show_large_upload_image(draft_bytes, draft_name)
             with wcol:
                 st.markdown('<div class="kw-sticky-marker"></div>', unsafe_allow_html=True)
                 write_pane()
