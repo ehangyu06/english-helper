@@ -61,10 +61,20 @@ class DraftSessionTests(unittest.TestCase):
                 {"date": "2026-07-05", "keyword": "in use"},
             ]
         }
-        prompt = make_mixed_roleplay_prompt(quiz, recent_only=True)
+        prompt = make_mixed_roleplay_prompt(quiz, scope="recent")
         self.assertIn("롤플레잉", prompt)
         self.assertIn("pose a threat", prompt)
         self.assertIn("최근 2주", prompt)
+
+    def test_mixed_roleplay_prompt_today(self):
+        quiz = {
+            "items": [
+                {"date": "2026-07-08", "keyword": "in use"},
+            ]
+        }
+        prompt = make_mixed_roleplay_prompt(quiz, scope="today")
+        self.assertIn("오늘 공부한", prompt)
+        self.assertIn("in use", prompt)
 
 
 if __name__ == "__main__":

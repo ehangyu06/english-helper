@@ -230,26 +230,46 @@ def make_quiz_prompt(keywords: str, studied_date: str = "", recent_only: bool = 
     return f"{intro}\n\n{_quiz_rules_body()}"
 
 
-def make_mixed_quiz_prompt(quiz: dict, recent_only: bool = False) -> str:
+def _mixed_review_scope_label(scope: str) -> str:
+    if scope == "today":
+        return "오늘 공부한"
+    if scope == "recent":
+        return "최근 2주 안에 공부한"
+    return "지금까지 공부한"
+
+
+def make_mixed_quiz_prompt(quiz: dict, scope: str = "all") -> str:
     """여러 날짜에서 골라 낸 표현들로 빈칸 퀴즈 프롬프트를 만든다."""
-    scope = "최근 2주 안에 공부한" if recent_only else "지금까지 공부한"
+    scope_label = _mixed_review_scope_label(scope)
     lines = "\n".join(f"- {item['date']}: {item['keyword']}" for item in quiz["items"])
-    intro = (
-        f"안녕! {scope} 표현들 중에서 **여러 날짜에 걸쳐** 무작위로 뽑은 표현들이야:\n"
-        f"{lines}\n\n"
-        f"(총 {len(quiz['items'])}개 — 날짜마다 1~2개씩 골랐어)"
-    )
+    if scope == "today":
+        pick_note = f"(총 {len(quiz['items'])}개 — 오늘 기록에서 무작위 선택)"
+        header = f"안녕! {scope_label} 표현들 중에서 무작위로 뽑은 표현들이야:\n"
+    else:
+        pick_note = f"(총 {len(quiz['items'])}개 — 날짜마다 1~2개씩 골랐어)"
+        header = (
+            f"안녕! {scope_label} 표현들 중에서 **여러 날짜에 걸쳐** "
+            f"무작위로 뽑은 표현들이야:\n"
+        )
+    intro = f"{header}{lines}\n\n{pick_note}"
     return f"{intro}\n\n{_quiz_rules_body()}"
 
 
-def make_mixed_roleplay_prompt(quiz: dict, recent_only: bool = False) -> str:
+def make_mixed_roleplay_prompt(quiz: dict, scope: str = "all") -> str:
     """여러 날짜에서 골라 낸 표현들로 롤플레잉 프롬프트를 만든다."""
-    scope = "최근 2주 안에 공부한" if recent_only else "지금까지 공부한"
+    scope_label = _mixed_review_scope_label(scope)
     lines = "\n".join(f"- {item['date']}: {item['keyword']}" for item in quiz["items"])
+    if scope == "today":
+        pick_note = f"(총 {len(quiz['items'])}개 — 오늘 기록에서 무작위 선택)"
+        header = f"안녕! {scope_label} 표현들 중에서 무작위로 뽑은 표현들이야:\n"
+    else:
+        pick_note = f"(총 {len(quiz['items'])}개 — 날짜마다 1~2개씩 골랐어)"
+        header = (
+            f"안녕! {scope_label} 표현들 중에서 **여러 날짜에 걸쳐** "
+            f"무작위로 뽑은 표현들이야:\n"
+        )
     return (
-        f"안녕! {scope} 표현들 중에서 **여러 날짜에 걸쳐** 무작위로 뽑은 표현들이야:\n"
-        f"{lines}\n\n"
-        f"(총 {len(quiz['items'])}개 — 날짜마다 1~2개씩 골랐어)\n\n"
+        f"{header}{lines}\n\n{pick_note}\n\n"
         "지금부터 이 표현들을 자연스럽게 사용할 수 있도록 나랑 가상의 롤플레잉 대화를 시작해줘.\n"
         "먼저 나에게 상황을 영어로 제시하면서 질문을 던져줘.\n"
         "내가 답변하면 내 문장을 자연스럽게 교정해주고,\n"
@@ -265,7 +285,7 @@ def render_random_review_block(
     roleplay_pick_key: str,
     quiz_pick_key: str,
     empty_message: str,
-    recent_only: bool = False,
+    scope: str = "all",
 ):
     """무작위 복습 블록 (롤플레잉 + 빈칸 퀴즈, 각각 새롭게 하기)."""
     st.markdown(title)
@@ -288,10 +308,17 @@ def render_random_review_block(
         st.markdown("**📚 이번에 뽑은 표현 (날짜별):**")
         for item in quiz["items"]:
             st.markdown(f"- **{item['date']}** · `{item['keyword']}`")
-        st.caption(f"총 {len(quiz['items'])}개 · 여러 날짜에서 1~2개씩 무작위 선택")
+        st.caption(
+            f"총 {len(quiz['items'])}개 · "
+            + (
+                "오늘 기록에서 무작위 선택"
+                if scope == "today"
+                else "여러 날짜에서 1~2개씩 무작위 선택"
+            )
+        )
 
-        roleplay_prompt = make_mixed_roleplay_prompt(quiz, recent_only)
-        quiz_prompt = make_mixed_quiz_prompt(quiz, recent_only)
+        roleplay_prompt = make_mixed_roleplay_prompt(quiz, scope)
+        quiz_prompt = make_mixed_quiz_prompt(quiz, scope)
 
         rp_col, rp_new = st.columns([3, 2], gap="small")
         with rp_col:
@@ -390,6 +417,11 @@ def fetch_mixed_recent_quiz(days: int = RECENT_REVIEW_DAYS):
 def fetch_mixed_all_quiz():
     """전체 기록에서 여러 날짜의 표현을 골고루 무작위 선택."""
     return build_mixed_random_quiz(storage.fetch_all_records())
+
+
+def fetch_mixed_today_quiz():
+    """오늘 저장한 기록에서 표현을 무작위 선택."""
+    return build_mixed_random_quiz(fetch_today_records())
 
 
 def fetch_today_records():
@@ -1426,22 +1458,16 @@ def main():
         st.subheader("📝 빈칸 넣기 퀴즈")
         st.caption("ChatGPT가 공부한 표현으로 빈칸 문장 퀴즈를 냅니다.")
 
-        st.markdown("**① 오늘 배운 표현**")
-        try:
-            today_records = fetch_today_records()
-        except Exception:
-            today_records = []
-
-        if not today_records:
-            st.info("오늘 저장한 학습이 없어요. 왼쪽에서 사진과 키워드를 저장해 보세요.")
-        else:
-            today_kw = keywords_from_records(today_records)
-            st.markdown(f"**오늘 키워드:** `{today_kw}`")
-            st.caption(f"오늘 저장 {len(today_records)}건")
-            link_button(
-                "📝 오늘 배운 단어로 빈칸 퀴즈",
-                build_chatgpt_url(make_quiz_prompt(today_kw)),
-            )
+        render_random_review_block(
+            title="**① 오늘 배운 표현**",
+            caption="오늘 저장한 기록에서 표현을 무작위로 뽑습니다.",
+            session_key="quiz_record_today",
+            fetch_fn=fetch_mixed_today_quiz,
+            roleplay_pick_key="pick_today_roleplay",
+            quiz_pick_key="pick_today_quiz",
+            empty_message="오늘 저장한 학습이 없어요. 왼쪽에서 사진과 키워드를 저장해 보세요.",
+            scope="today",
+        )
 
         st.divider()
 
@@ -1456,7 +1482,7 @@ def main():
                 "최근 2주 안에 저장한 학습 기록이 없습니다.\n\n"
                 "왼쪽에서 학습을 등록하면 이곳에서 복습 퀴즈를 풀 수 있어요!"
             ),
-            recent_only=True,
+            scope="recent",
         )
 
         st.divider()
@@ -1469,7 +1495,7 @@ def main():
             roleplay_pick_key="pick_all_roleplay",
             quiz_pick_key="pick_all_quiz",
             empty_message="아직 저장된 학습 기록이 없습니다. 왼쪽에서 첫 기록을 등록해 보세요!",
-            recent_only=False,
+            scope="all",
         )
 
     st.divider()
