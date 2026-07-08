@@ -42,7 +42,6 @@ DRAFT_IMAGE_BYTES = "draft_image_bytes"
 DRAFT_IMAGE_NAME = "draft_image_name"
 DRAFT_UPLOAD_ERROR = "draft_upload_error"
 DRAFT_KEYWORDS = "draft_keywords"
-DRAFT_PROMPT_PREVIEW_OPEN = "draft_prompt_preview_open"
 DRAFT_CHATGPT_READY = "draft_chatgpt_ready"
 
 
@@ -53,7 +52,6 @@ def draft_state_keys_to_clear() -> tuple[str, ...]:
         DRAFT_IMAGE_NAME,
         DRAFT_UPLOAD_ERROR,
         DRAFT_KEYWORDS,
-        DRAFT_PROMPT_PREVIEW_OPEN,
         DRAFT_CHATGPT_READY,
     )
 
@@ -244,17 +242,32 @@ def make_mixed_quiz_prompt(quiz: dict, recent_only: bool = False) -> str:
     return f"{intro}\n\n{_quiz_rules_body()}"
 
 
-def render_random_quiz_block(
+def make_mixed_roleplay_prompt(quiz: dict, recent_only: bool = False) -> str:
+    """여러 날짜에서 골라 낸 표현들로 롤플레잉 프롬프트를 만든다."""
+    scope = "최근 2주 안에 공부한" if recent_only else "지금까지 공부한"
+    lines = "\n".join(f"- {item['date']}: {item['keyword']}" for item in quiz["items"])
+    return (
+        f"안녕! {scope} 표현들 중에서 **여러 날짜에 걸쳐** 무작위로 뽑은 표현들이야:\n"
+        f"{lines}\n\n"
+        f"(총 {len(quiz['items'])}개 — 날짜마다 1~2개씩 골랐어)\n\n"
+        "지금부터 이 표현들을 자연스럽게 사용할 수 있도록 나랑 가상의 롤플레잉 대화를 시작해줘.\n"
+        "먼저 나에게 상황을 영어로 제시하면서 질문을 던져줘.\n"
+        "내가 답변하면 내 문장을 자연스럽게 교정해주고,\n"
+        "표현들을 어떻게 더 자연스럽게 쓸 수 있는지도 알려줘."
+    )
+
+
+def render_random_review_block(
     title: str,
     caption: str,
     session_key: str,
     fetch_fn,
-    pick_button_key: str,
-    quiz_button_label: str,
+    roleplay_pick_key: str,
+    quiz_pick_key: str,
     empty_message: str,
     recent_only: bool = False,
 ):
-    """무작위 복습 퀴즈 블록 (최근 2주 / 전체 등 공통 UI)."""
+    """무작위 복습 블록 (롤플레잉 + 빈칸 퀴즈, 각각 새롭게 하기)."""
     st.markdown(title)
     st.caption(caption)
 
@@ -276,21 +289,36 @@ def render_random_quiz_block(
         for item in quiz["items"]:
             st.markdown(f"- **{item['date']}** · `{item['keyword']}`")
         st.caption(f"총 {len(quiz['items'])}개 · 여러 날짜에서 1~2개씩 무작위 선택")
-        prompt = make_mixed_quiz_prompt(quiz, recent_only)
-        quiz_col, new_col = st.columns([3, 2])
-        with quiz_col:
-            chatgpt_prompt_button(quiz_button_label, prompt, show_caption=False)
-        with new_col:
+
+        roleplay_prompt = make_mixed_roleplay_prompt(quiz, recent_only)
+        quiz_prompt = make_mixed_quiz_prompt(quiz, recent_only)
+
+        rp_col, rp_new = st.columns([3, 2], gap="small")
+        with rp_col:
+            chatgpt_prompt_button("💬 롤플레잉 대화하기", roleplay_prompt, show_caption=False)
+        with rp_new:
             st.markdown('<div style="height:0.3rem"></div>', unsafe_allow_html=True)
-            if st.button("🔄 새롭게 하기", use_container_width=True, key=pick_button_key):
+            if st.button("🔄 새롭게 하기", use_container_width=True, key=roleplay_pick_key):
                 st.session_state[session_key] = fetch_fn()
                 st.rerun()
+
+        quiz_col, quiz_new = st.columns([3, 2], gap="small")
+        with quiz_col:
+            external_url_button(
+                "🔁 빈칸 퀴즈 풀기",
+                build_chatgpt_url(quiz_prompt),
+                bg_color="#7c3aed",
+            )
+        with quiz_new:
+            st.markdown('<div style="height:0.3rem"></div>', unsafe_allow_html=True)
+            if st.button("🔄 새롭게 하기", use_container_width=True, key=quiz_pick_key):
+                st.session_state[session_key] = fetch_fn()
+                st.rerun()
+
         st.caption(
             "💡 ChatGPT 입력창 내용이 짧으면 **붙여넣기**(길게 누르기) 하세요. "
-            "문제를 다 풀었으면 **새롭게 하기**로 다른 표현을 뽑으세요."
+            "다른 표현을 뽑으려면 각 버튼 옆 **새롭게 하기**를 누르세요."
         )
-        with st.expander("🔎 프롬프트 미리보기"):
-            st.code(prompt, language="text")
 
 
 def keywords_from_records(records: list) -> str:
@@ -404,7 +432,6 @@ def init_draft_session_state() -> None:
     st.session_state.setdefault(DRAFT_IMAGE_NAME, None)
     st.session_state.setdefault(DRAFT_UPLOAD_ERROR, None)
     st.session_state.setdefault(DRAFT_KEYWORDS, [""] * MAX_KEYWORDS)
-    st.session_state.setdefault(DRAFT_PROMPT_PREVIEW_OPEN, False)
     st.session_state.setdefault(DRAFT_CHATGPT_READY, False)
 
 
@@ -940,10 +967,6 @@ def render_detail(rec: dict):
             bg_color="#7c3aed",
         )
 
-    if review_roleplay_prompt:
-        with st.expander("🔎 ChatGPT에게 전달될 프롬프트 미리보기 (롤플레잉)", expanded=False):
-            st.code(review_roleplay_prompt, language="text")
-
     st.divider()
     c1, c2, c3 = st.columns(3)
 
@@ -1379,13 +1402,6 @@ def main():
                     key="draft_practice_disabled",
                 )
 
-            st.toggle(
-                "🔎 ChatGPT에게 전달될 프롬프트 미리보기",
-                key=DRAFT_PROMPT_PREVIEW_OPEN,
-            )
-            if st.session_state.get(DRAFT_PROMPT_PREVIEW_OPEN):
-                preview_kw = kw if kw else "{입력한 키워드}"
-                st.code(make_roleplay_prompt(preview_kw), language="text")
             return kw
 
         if draft_bytes is not None and not upload_error:
@@ -1426,18 +1442,16 @@ def main():
                 "📝 오늘 배운 단어로 빈칸 퀴즈",
                 build_chatgpt_url(make_quiz_prompt(today_kw)),
             )
-            with st.expander("🔎 프롬프트 미리보기"):
-                st.code(make_quiz_prompt(today_kw), language="text")
 
         st.divider()
 
-        render_random_quiz_block(
+        render_random_review_block(
             title="**② 최근 2주 복습**",
             caption="최근 2주 기록에서 여러 날짜에 걸쳐 표현을 1~2개씩 무작위로 뽑습니다.",
             session_key="quiz_record_recent",
             fetch_fn=fetch_mixed_recent_quiz,
-            pick_button_key="pick_recent_quiz",
-            quiz_button_label="🧠 최근 2주 빈칸 퀴즈 풀기",
+            roleplay_pick_key="pick_recent_roleplay",
+            quiz_pick_key="pick_recent_quiz",
             empty_message=(
                 "최근 2주 안에 저장한 학습 기록이 없습니다.\n\n"
                 "왼쪽에서 학습을 등록하면 이곳에서 복습 퀴즈를 풀 수 있어요!"
@@ -1447,13 +1461,13 @@ def main():
 
         st.divider()
 
-        render_random_quiz_block(
+        render_random_review_block(
             title="**③ 전체 무작위 복습**",
             caption="전체 기록에서 여러 날짜에 걸쳐 표현을 1~2개씩 무작위로 뽑습니다.",
             session_key="quiz_record_all",
             fetch_fn=fetch_mixed_all_quiz,
-            pick_button_key="pick_all_quiz",
-            quiz_button_label="🧠 전체 무작위 빈칸 퀴즈 풀기",
+            roleplay_pick_key="pick_all_roleplay",
+            quiz_pick_key="pick_all_quiz",
             empty_message="아직 저장된 학습 기록이 없습니다. 왼쪽에서 첫 기록을 등록해 보세요!",
             recent_only=False,
         )

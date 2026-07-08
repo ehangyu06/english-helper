@@ -12,11 +12,11 @@ from app import (  # noqa: E402
     DRAFT_IMAGE_BYTES,
     DRAFT_KEYWORDS,
     DRAFT_KEY_PREFIX,
-    DRAFT_PROMPT_PREVIEW_OPEN,
     apply_clear_draft,
     draft_state_keys_to_clear,
     has_draft_content,
     join_keywords,
+    make_mixed_roleplay_prompt,
 )
 
 
@@ -40,7 +40,6 @@ class DraftSessionTests(unittest.TestCase):
             f"{DRAFT_KEY_PREFIX}_1": "world",
             DRAFT_IMAGE_BYTES: b"img",
             DRAFT_KEYWORDS: ["hello", "world"],
-            DRAFT_PROMPT_PREVIEW_OPEN: True,
             "detail_id": 5,
         }
         apply_clear_draft(session)
@@ -48,14 +47,24 @@ class DraftSessionTests(unittest.TestCase):
         self.assertNotIn(f"{DRAFT_KEY_PREFIX}_0", session)
         self.assertNotIn(DRAFT_IMAGE_BYTES, session)
         self.assertNotIn(DRAFT_KEYWORDS, session)
-        self.assertNotIn(DRAFT_PROMPT_PREVIEW_OPEN, session)
         self.assertEqual(session["detail_id"], 5)
 
     def test_draft_state_keys_to_clear_complete(self):
         keys = set(draft_state_keys_to_clear())
         self.assertIn(DRAFT_IMAGE_BYTES, keys)
         self.assertIn(DRAFT_KEYWORDS, keys)
-        self.assertIn(DRAFT_PROMPT_PREVIEW_OPEN, keys)
+
+    def test_mixed_roleplay_prompt(self):
+        quiz = {
+            "items": [
+                {"date": "2026-07-01", "keyword": "pose a threat"},
+                {"date": "2026-07-05", "keyword": "in use"},
+            ]
+        }
+        prompt = make_mixed_roleplay_prompt(quiz, recent_only=True)
+        self.assertIn("롤플레잉", prompt)
+        self.assertIn("pose a threat", prompt)
+        self.assertIn("최근 2주", prompt)
 
 
 if __name__ == "__main__":
