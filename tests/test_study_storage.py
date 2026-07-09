@@ -111,9 +111,9 @@ class StudyStorageTests(unittest.TestCase):
 
     @patch.object(storage, "use_supabase", return_value=False)
     def test_normalize_png_screenshot_to_small_jpeg(self, _mock_sb):
-        """스크린샷(PNG)도 작은 JPEG 로 저장되어 용량을 줄인다."""
+        """고해상도 스크린샷(PNG)도 JPEG로 정규화하고 업로드 상한 이하로 맞춘다."""
         buf = io.BytesIO()
-        Image.new("RGB", (2048, 1536), color=(240, 240, 240)).save(buf, format="PNG")
+        Image.new("RGB", (4032, 3024), color=(240, 240, 240)).save(buf, format="PNG")
         out_bytes, out_name = storage.normalize_image_bytes(buf.getvalue(), "screenshot.png")
         self.assertEqual(out_name.endswith(".jpg"), True)
         self.assertLess(len(out_bytes), len(buf.getvalue()))

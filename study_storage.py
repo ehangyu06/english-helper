@@ -49,12 +49,12 @@ _local_paths_ready = False
 if str(_WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKSPACE_ROOT))
 
-# study_storage v5 — pagination, thumbnails, 960px uploads (Streamlit cache bust)
+# study_storage v6 — pagination, thumbnails, 1920px uploads (한글 판독용 해상도 2배)
 BUCKET = "study-images"          # Supabase Storage 버킷 이름
 TABLE = "study_records"          # Supabase 테이블 이름
 DEFAULT_SIGNED_URL_EXPIRES = 3600  # Signed URL 유효 시간(초). 기본 1시간
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
-MAX_UPLOAD_LONG_EDGE = 960
+MAX_UPLOAD_LONG_EDGE = 1920
 JPEG_UPLOAD_QUALITY = 60
 THUMB_LONG_EDGE = 120
 THUMB_JPEG_QUALITY = 55
