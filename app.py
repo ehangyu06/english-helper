@@ -19,6 +19,7 @@ import html
 import json
 import os
 import random
+import time
 import urllib.parse
 from datetime import datetime, timedelta
 from typing import Optional
@@ -43,6 +44,40 @@ DRAFT_IMAGE_NAME = "draft_image_name"
 DRAFT_UPLOAD_ERROR = "draft_upload_error"
 DRAFT_KEYWORDS = "draft_keywords"
 DRAFT_CHATGPT_READY = "draft_chatgpt_ready"
+
+# 저장 버튼 중복 클릭 방지
+SAVE_BUSY_KEY = "_ui_save_busy"
+SAVE_PENDING_KEY = "_ui_save_pending"
+SAVE_PENDING_PAYLOAD = "_ui_save_pending_payload"
+EDIT_SAVE_PENDING_KEY = "_ui_edit_save_pending"
+EDIT_SAVE_PENDING_PAYLOAD = "_ui_edit_save_pending_payload"
+SAVE_DEBOUNCE_FP = "_ui_save_fp"
+SAVE_DEBOUNCE_TS = "_ui_save_ts"
+SAVE_DEBOUNCE_SECONDS = 5.0
+
+
+def _save_fingerprint(*parts) -> str:
+    return "|".join("" if p is None else str(p) for p in parts)
+
+
+def _is_duplicate_save(fingerprint: str) -> bool:
+    last_fp = st.session_state.get(SAVE_DEBOUNCE_FP)
+    last_ts = float(st.session_state.get(SAVE_DEBOUNCE_TS) or 0)
+    return last_fp == fingerprint and (time.time() - last_ts) < SAVE_DEBOUNCE_SECONDS
+
+
+def _mark_save_done(fingerprint: str) -> None:
+    st.session_state[SAVE_DEBOUNCE_FP] = fingerprint
+    st.session_state[SAVE_DEBOUNCE_TS] = time.time()
+    st.session_state[SAVE_BUSY_KEY] = False
+
+
+def _queue_save(pending_key: str, payload_key: str, payload: dict) -> None:
+    """첫 클릭: 버튼 잠금 + 다음 렌더에서 실제 저장."""
+    st.session_state[SAVE_BUSY_KEY] = True
+    st.session_state[pending_key] = True
+    st.session_state[payload_key] = payload
+    st.rerun()
 
 
 def draft_state_keys_to_clear() -> tuple[str, ...]:
@@ -489,6 +524,15 @@ def clear_draft_session_state() -> None:
     uploader_round = int(st.session_state.get("form_round", 0))
     apply_clear_draft(st.session_state, DRAFT_KEY_PREFIX)
     st.session_state.pop(f"draft_uploader_{uploader_round}", None)
+    st.session_state.pop("_durable_draft_fp", None)
+    st.session_state.pop("_durable_draft_ts", None)
+    st.session_state.pop("_draft_restored", None)
+    try:
+        import english_draft as ed
+
+        ed.clear_working_draft()
+    except Exception:
+        pass
 
 
 def has_active_draft() -> bool:
@@ -501,6 +545,176 @@ def persist_upload_to_draft(file_bytes: bytes, file_name: str) -> None:
     st.session_state[DRAFT_IMAGE_BYTES] = file_bytes
     st.session_state[DRAFT_IMAGE_NAME] = file_name
     st.session_state[DRAFT_UPLOAD_ERROR] = None
+    persist_durable_draft_from_session(force=True)
+
+
+def persist_durable_draft_from_session(*, force: bool = False) -> bool:
+    """세션의 사진·숙어를 Draft로 백업. 성공 여부 반환."""
+    import english_draft as ed
+
+    try:
+        kw_slots = _keyword_values_from_state(DRAFT_KEY_PREFIX)
+    except Exception:
+        kw_slots = list(st.session_state.get(DRAFT_KEYWORDS) or [])
+    if not any(str(k or "").strip() for k in kw_slots):
+        fallback = list(st.session_state.get(DRAFT_KEYWORDS) or [])
+        if any(str(k or "").strip() for k in fallback):
+            kw_slots = fallback
+
+    img = st.session_state.get(DRAFT_IMAGE_BYTES)
+    name = st.session_state.get(DRAFT_IMAGE_NAME)
+    if not has_draft_content(img, kw_slots):
+        return False
+
+    nbytes = len(img) if isinstance(img, (bytes, bytearray)) else 0
+    fp = ed.draft_fingerprint(kw_slots, has_image=bool(img), image_nbytes=nbytes)
+    last_fp = st.session_state.get("_durable_draft_fp")
+    last_ts = float(st.session_state.get("_durable_draft_ts") or 0)
+    if not force and fp == last_fp and (time.time() - last_ts) < 1.2:
+        return True
+
+    saved = ed.save_working_draft(
+        keywords=kw_slots,
+        image_bytes=img if isinstance(img, (bytes, bytearray)) else None,
+        image_name=name,
+    )
+    err = ed.get_last_error()
+    if err:
+        st.session_state["_draft_save_error"] = err
+    else:
+        st.session_state.pop("_draft_save_error", None)
+
+    if saved is not None:
+        st.session_state["_durable_draft_fp"] = fp
+        st.session_state["_durable_draft_ts"] = time.time()
+        st.session_state["_durable_draft_ok"] = True
+        return True
+    st.session_state["_durable_draft_ok"] = False
+    return False
+
+
+def restore_durable_draft_to_session(draft: dict) -> None:
+    """영구 Draft → session_state (이전 공부 이어가기)."""
+    keywords = list(draft.get("keywords") or [])
+    while len(keywords) < MAX_KEYWORDS:
+        keywords.append("")
+    keywords = keywords[:MAX_KEYWORDS]
+
+    for i in range(MAX_KEYWORDS):
+        st.session_state.pop(f"{DRAFT_KEY_PREFIX}_{i}", None)
+
+    st.session_state[DRAFT_KEYWORDS] = keywords
+    for i, val in enumerate(keywords):
+        if val:
+            st.session_state[f"{DRAFT_KEY_PREFIX}_{i}"] = val
+
+    st.session_state[DRAFT_IMAGE_BYTES] = draft.get("image_bytes")
+    st.session_state[DRAFT_IMAGE_NAME] = draft.get("image_name") or "image.jpg"
+    st.session_state[DRAFT_UPLOAD_ERROR] = None
+    st.session_state["form_round"] = int(st.session_state.get("form_round", 0)) + 1
+    st.session_state["_draft_restored"] = True
+    st.session_state.pop("draft_recovery_dismissed", None)
+    for key in list(st.session_state.keys()):
+        if str(key).startswith("draft_uploader_"):
+            st.session_state.pop(key, None)
+
+
+def maybe_auto_restore_draft() -> None:
+    """세션이 비었고 Draft가 있으면 자동으로 이어서 작성 상태로 복구."""
+    import english_draft as ed
+
+    if st.session_state.get("draft_auto_restore_done"):
+        return
+    if has_active_draft():
+        st.session_state["draft_auto_restore_done"] = True
+        return
+
+    draft = ed.load_working_draft()
+    st.session_state["draft_auto_restore_done"] = True
+    if not draft:
+        return
+
+    restore_durable_draft_to_session(draft)
+    st.session_state["flash"] = (
+        "이전에 작성하던 공부(사진·숙어)를 복구했습니다. "
+        "이어서 입력한 뒤 「학습 기록 저장하기」를 눌러 주세요."
+    )
+    st.rerun()
+
+
+def render_draft_recovery_banner() -> None:
+    """Draft 안내 / 수동 복구 UI."""
+    import english_draft as ed
+
+    if st.session_state.get("draft_recovery_dismissed"):
+        return
+    if has_active_draft():
+        if st.session_state.get("_durable_draft_ok"):
+            st.caption("☁️ 임시 Draft 저장됨 — 로그아웃·재접속 후에도 이어갈 수 있습니다.")
+        err = st.session_state.get("_draft_save_error")
+        if err:
+            st.warning(f"임시 Draft 저장에 문제가 있습니다: {err[:200]}")
+        return
+
+    draft = ed.load_working_draft()
+    if not draft:
+        return
+
+    try:
+        box = st.container(border=True)
+    except TypeError:
+        box = st.container()
+    with box:
+        st.markdown("### 📝 작성 중인 공부가 있습니다")
+        st.caption(
+            "앱이 중단되거나 다시 로그인해온 경우에도, "
+            "업로드한 사진과 적어 두던 숙어·단어를 이어서 입력할 수 있습니다."
+        )
+        title = draft.get("title") or "임시 학습 입력"
+        updated = draft.get("updated_at") or ""
+        backend = draft.get("backend") or ""
+        meta = f"**{title}**"
+        if updated:
+            meta += f" · 마지막 임시저장 {updated}"
+        if backend:
+            meta += f" · ({backend})"
+        st.markdown(meta)
+        if draft.get("has_image"):
+            st.caption("🖼 사진이 포함되어 있습니다.")
+        kw_preview = ", ".join(k for k in (draft.get("keywords") or []) if k)
+        if kw_preview:
+            shown = kw_preview[:120] + ("…" if len(kw_preview) > 120 else "")
+            st.caption(f"키워드: {shown}")
+
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            if st.button(
+                "▶️ 이전 공부 이어가기",
+                type="primary",
+                use_container_width=True,
+                key="resume_study_draft",
+            ):
+                restore_durable_draft_to_session(draft)
+                st.session_state["flash"] = "이전 입력을 불러왔습니다. 이어서 작성하세요."
+                st.rerun()
+        with c2:
+            if st.button(
+                "새로 시작",
+                use_container_width=True,
+                key="dismiss_study_draft",
+            ):
+                st.session_state["draft_recovery_dismissed"] = True
+                st.rerun()
+        with c3:
+            if st.button(
+                "🗑️ Draft 삭제",
+                use_container_width=True,
+                key="delete_study_draft",
+            ):
+                ed.clear_working_draft()
+                st.session_state["draft_recovery_dismissed"] = True
+                st.session_state["flash"] = "임시 입력을 삭제했습니다."
+                st.rerun()
 
 
 def process_uploaded_file(uploaded) -> tuple[Optional[bytes], Optional[str], Optional[str]]:
@@ -1003,27 +1217,68 @@ def render_detail(rec: dict):
     c1, c2, c3 = st.columns(3)
 
     with c1:
-        if st.button("💾 수정 저장", use_container_width=True, key=f"save_edit_{rid}"):
-            if not new_keywords.strip():
+        edit_busy = bool(st.session_state.get(SAVE_BUSY_KEY))
+        if st.session_state.pop(EDIT_SAVE_PENDING_KEY, False):
+            payload = st.session_state.pop(EDIT_SAVE_PENDING_PAYLOAD, None) or {}
+            keywords = (payload.get("keywords") or "").strip()
+            fp = payload.get("fp") or _save_fingerprint("edit", rid, keywords)
+            if _is_duplicate_save(fp):
+                st.info("방금 저장했습니다. 중복 저장을 막기 위해 잠시만 기다려 주세요.")
+                st.session_state[SAVE_BUSY_KEY] = False
+            elif not keywords:
                 st.warning("키워드를 입력해 주세요.")
+                st.session_state[SAVE_BUSY_KEY] = False
             else:
                 try:
-                    if replace is not None:
-                        fb, fn = prepare_upload_image(
-                            replace.getbuffer().tobytes(), replace.name
-                        )
-                        storage.update_study(rid, new_keywords.strip(), fn, fb)
-                    else:
-                        storage.update_study(rid, new_keywords.strip())
+                    with st.spinner("저장 중… 버튼을 다시 누르지 마세요."):
+                        replace_file = payload.get("replace")
+                        if replace_file is not None:
+                            fb, fn = prepare_upload_image(
+                                replace_file["bytes"], replace_file["name"]
+                            )
+                            storage.update_study(rid, keywords, fn, fb)
+                        else:
+                            storage.update_study(rid, keywords)
                     _cached_detail_image_bytes.clear()
                     _cached_thumbnail_data_uri.clear()
+                    _mark_save_done(fp)
                     st.session_state["detail_id"] = None
                     st.session_state["flash"] = "저장되었습니다."
                     st.rerun()
                 except ValueError as e:
+                    st.session_state[SAVE_BUSY_KEY] = False
                     st.error(str(e))
                 except Exception as e:
+                    st.session_state[SAVE_BUSY_KEY] = False
                     st.error(f"수정 중 오류가 발생했어요: {e}")
+
+        edit_label = "⏳ 저장 중…" if edit_busy else "💾 수정 저장"
+        if st.button(
+            edit_label,
+            use_container_width=True,
+            key=f"save_edit_{rid}",
+            disabled=edit_busy,
+        ):
+            if not new_keywords.strip():
+                st.warning("키워드를 입력해 주세요.")
+            else:
+                replace_payload = None
+                if replace is not None:
+                    replace_payload = {
+                        "bytes": replace.getbuffer().tobytes(),
+                        "name": replace.name,
+                    }
+                _queue_save(
+                    EDIT_SAVE_PENDING_KEY,
+                    EDIT_SAVE_PENDING_PAYLOAD,
+                    {
+                        "keywords": new_keywords.strip(),
+                        "replace": replace_payload,
+                        "fp": _save_fingerprint(
+                            "edit", rid, new_keywords.strip(), bool(replace_payload)
+                        ),
+                    },
+                )
 
     with c2:
         if st.button("🗑️ 삭제", use_container_width=True, key=f"del_{rid}"):
@@ -1190,14 +1445,31 @@ def require_auth() -> bool:
     if st.button("입장", use_container_width=True, type="primary"):
         if entered == auth_password():
             st.session_state["authenticated"] = True
+            st.session_state.pop("draft_auto_restore_done", None)
+            st.session_state.pop("draft_recovery_dismissed", None)
             st.rerun()
         else:
             st.error("비밀번호가 올바르지 않습니다.")
     return False
 
 
+def _perform_logout() -> None:
+    """로그아웃 전 임시 입력을 Draft로 강제 저장하고 화면 세션만 비운다."""
+    try:
+        persist_durable_draft_from_session(force=True)
+    except Exception:
+        pass
+    apply_clear_draft(st.session_state, DRAFT_KEY_PREFIX)
+    st.session_state.pop("_durable_draft_fp", None)
+    st.session_state.pop("_durable_draft_ts", None)
+    st.session_state.pop("_durable_draft_ok", None)
+    st.session_state.pop("draft_auto_restore_done", None)
+    st.session_state.pop("draft_recovery_dismissed", None)
+    st.session_state["authenticated"] = False
+
+
 def render_logout_control():
-    """우측 상단 작은 잠금 메뉴 — 필요할 때만 로그아웃."""
+    """우측 상단 작은 잠금 메뉴 — 필요할 때만 로그인."""
     if not auth_enabled():
         return
     _, action_col = st.columns([11, 1])
@@ -1205,10 +1477,10 @@ def render_logout_control():
         if hasattr(st, "popover"):
             with st.popover("🔒", help="계정"):
                 if st.button("로그아웃", key="logout_btn", use_container_width=True):
-                    st.session_state["authenticated"] = False
+                    _perform_logout()
                     st.rerun()
         elif st.button("로그아웃", key="logout_btn_compact", help="로그아웃"):
-            st.session_state["authenticated"] = False
+            _perform_logout()
             st.rerun()
 
 
@@ -1246,6 +1518,7 @@ def main():
     st.session_state.setdefault("detail_id", None)  # 상세보기 중인 기록 id
     st.session_state.setdefault("flash", None)      # 한 번 보여줄 안내 메시지
     init_draft_session_state()
+    maybe_auto_restore_draft()
 
     st.title("🗣️ AI 시각 연상 영어 회화 보조 프로그램")
     st.caption(
@@ -1257,6 +1530,8 @@ def main():
     if st.session_state.get("flash"):
         st.success(st.session_state["flash"])
         st.session_state["flash"] = None
+
+    render_draft_recovery_banner()
 
     # 사진 옆 키워드 입력 패널을, 사진을 스크롤해도 화면에 계속 붙어 있도록(sticky) 만든다.
     # (사진/입력 두 열 중 '입력 열'만 골라서 고정. 화면이 좁은 휴대폰 세로 모드에서는 적용 안 함.)
@@ -1316,6 +1591,10 @@ def main():
             font-size: 1.08rem !important;
             font-weight: 700 !important;
         }
+        .stButton > button:disabled {
+            opacity: 0.72 !important;
+            cursor: wait !important;
+        }
         div[data-testid="stVerticalBlock"]:has(.kw-panel-marker) input[type="text"] {
             font-size: 1.1rem !important;
             min-height: 2.85rem !important;
@@ -1362,7 +1641,8 @@ def main():
         if has_active_draft():
             st.caption(
                 "📝 **임시 입력 유지 중** — 저장에 성공하기 전까지 "
-                "이 기기에서 사진·숙어·미리보기 상태를 유지합니다."
+                "사진·숙어를 이 기기와 서버 Draft에 보관합니다. "
+                "앱이 끊겨도 「이전 공부 이어가기」로 복구할 수 있습니다."
             )
 
         uploader_round = st.session_state["form_round"]
@@ -1391,30 +1671,73 @@ def main():
             kw_slots = render_keyword_inputs(DRAFT_KEY_PREFIX, persist_draft=True)
             kw = join_keywords(kw_slots)
             st.session_state[DRAFT_CHATGPT_READY] = bool(kw)
+            persist_durable_draft_from_session()
 
+            save_busy = bool(st.session_state.get(SAVE_BUSY_KEY))
+
+            if st.session_state.pop(SAVE_PENDING_KEY, False):
+                payload = st.session_state.pop(SAVE_PENDING_PAYLOAD, None) or {}
+                pending_kw = (payload.get("kw") or "").strip()
+                pending_name = payload.get("name") or "image.jpg"
+                pending_error = payload.get("upload_error")
+                fp = payload.get("fp") or _save_fingerprint(
+                    "draft", pending_kw, pending_name, bool(payload.get("has_bytes"))
+                )
+                if _is_duplicate_save(fp):
+                    st.info("방금 저장했습니다. 같은 내용이 중복으로 들어가지 않도록 잠시만 기다려 주세요.")
+                    st.session_state[SAVE_BUSY_KEY] = False
+                elif not pending_kw:
+                    st.warning("핵심 키워드를 최소 1개 이상 입력해 주세요.")
+                    st.session_state[SAVE_BUSY_KEY] = False
+                elif payload.get("has_bytes") and pending_error:
+                    st.error(pending_error)
+                    st.session_state[SAVE_BUSY_KEY] = False
+                else:
+                    try:
+                        with st.spinner("저장 중… 버튼을 다시 누르지 마세요."):
+                            use_bytes = st.session_state.get(DRAFT_IMAGE_BYTES) if payload.get("has_bytes") else None
+                            use_name = st.session_state.get(DRAFT_IMAGE_NAME) or pending_name
+                            if use_bytes is not None:
+                                storage.save_study(pending_kw, use_name, use_bytes)
+                            else:
+                                storage.save_study(pending_kw)
+                        clear_draft_session_state()
+                        _mark_save_done(fp)
+                        st.session_state["flash"] = "저장되었습니다."
+                        st.rerun()
+                    except ValueError as e:
+                        st.session_state[SAVE_BUSY_KEY] = False
+                        st.error(str(e))
+                    except Exception as e:
+                        st.session_state[SAVE_BUSY_KEY] = False
+                        st.error(f"저장 실패: {e}")
+
+            save_label = "⏳ 저장 중…" if save_busy else "💾 학습 기록 저장하기"
             if st.button(
-                "💾 학습 기록 저장하기",
+                save_label,
                 use_container_width=True,
                 key="draft_save_btn",
                 type="primary",
+                disabled=save_busy,
             ):
                 if not kw:
                     st.warning("핵심 키워드를 최소 1개 이상 입력해 주세요.")
                 elif draft_bytes is not None and upload_error:
                     st.error(upload_error)
                 else:
-                    try:
-                        if draft_bytes is not None:
-                            storage.save_study(kw, draft_name, draft_bytes)
-                        else:
-                            storage.save_study(kw)
-                        clear_draft_session_state()
-                        st.session_state["flash"] = "저장되었습니다."
-                        st.rerun()
-                    except ValueError as e:
-                        st.error(str(e))
-                    except Exception as e:
-                        st.error(f"저장 실패: {e}")
+                    _queue_save(
+                        SAVE_PENDING_KEY,
+                        SAVE_PENDING_PAYLOAD,
+                        {
+                            "kw": kw,
+                            "name": draft_name,
+                            "has_bytes": draft_bytes is not None,
+                            "upload_error": upload_error,
+                            "fp": _save_fingerprint(
+                                "draft", kw, draft_name, bool(draft_bytes)
+                            ),
+                        },
+                    )
 
             if kw:
                 link_button(
