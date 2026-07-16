@@ -93,6 +93,24 @@ class AppRestoreHelpersTests(unittest.TestCase):
         self.assertTrue(callable(english_app.render_draft_recovery_banner))
         self.assertTrue(callable(english_app._perform_logout))
 
+    def test_maybe_auto_restore_does_not_fill_form(self):
+        """자동 복구는 숙어 칸을 채우지 않는다 (이전 값이 기본값처럼 남는 버그 방지)."""
+        import app as english_app
+
+        session = {}
+
+        class _FakeSession(dict):
+            def get(self, key, default=None):
+                return super().get(key, default)
+
+        fake = _FakeSession()
+        with mock.patch.object(english_app, "st") as st_mock:
+            st_mock.session_state = fake
+            english_app.maybe_auto_restore_draft()
+        self.assertTrue(fake.get("draft_auto_restore_done"))
+        self.assertNotIn(english_app.DRAFT_KEYWORDS, fake)
+        self.assertNotIn(f"{english_app.DRAFT_KEY_PREFIX}_0", fake)
+
 
 if __name__ == "__main__":
     unittest.main()

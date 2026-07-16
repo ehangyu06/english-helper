@@ -620,26 +620,12 @@ def restore_durable_draft_to_session(draft: dict) -> None:
 
 
 def maybe_auto_restore_draft() -> None:
-    """세션이 비었고 Draft가 있으면 자동으로 이어서 작성 상태로 복구."""
-    import english_draft as ed
+    """자동으로 폼을 채우지 않는다.
 
-    if st.session_state.get("draft_auto_restore_done"):
-        return
-    if has_active_draft():
-        st.session_state["draft_auto_restore_done"] = True
-        return
-
-    draft = ed.load_working_draft()
+    예전 Draft를 조용히 복구하면 빈 칸에 이전 숙어가 기본값처럼 남는 문제가 생긴다.
+    복구는 「이전 공부 이어가기」를 눌렀을 때만 한다.
+    """
     st.session_state["draft_auto_restore_done"] = True
-    if not draft:
-        return
-
-    restore_durable_draft_to_session(draft)
-    st.session_state["flash"] = (
-        "이전에 작성하던 공부(사진·숙어)를 복구했습니다. "
-        "이어서 입력한 뒤 「학습 기록 저장하기」를 눌러 주세요."
-    )
-    st.rerun()
 
 
 def render_draft_recovery_banner() -> None:
@@ -668,7 +654,8 @@ def render_draft_recovery_banner() -> None:
         st.markdown("### 📝 작성 중인 공부가 있습니다")
         st.caption(
             "앱이 중단되거나 다시 로그인해온 경우에도, "
-            "업로드한 사진과 적어 두던 숙어·단어를 이어서 입력할 수 있습니다."
+            "업로드한 사진과 적어 두던 숙어·단어를 이어서 입력할 수 있습니다. "
+            "새 공부를 하려면 「새로 시작」을 눌러 주세요."
         )
         title = draft.get("title") or "임시 학습 입력"
         updated = draft.get("updated_at") or ""
@@ -703,7 +690,10 @@ def render_draft_recovery_banner() -> None:
                 use_container_width=True,
                 key="dismiss_study_draft",
             ):
+                # 남아 있던 Draft를 지우지 않으면 다음 접속에도 같은 숙어가 다시 나타남
+                ed.clear_working_draft()
                 st.session_state["draft_recovery_dismissed"] = True
+                st.session_state["flash"] = "새 공부를 시작합니다."
                 st.rerun()
         with c3:
             if st.button(
