@@ -132,75 +132,56 @@ def build_chatgpt_url(prompt_text: str) -> str:
 
 def chatgpt_prompt_button(label: str, prompt: str, show_caption: bool = True):
     """
-    미리보기와 동일한 프롬프트를 클립보드에 복사하고 ChatGPT를 연다.
-    (아이패드·긴 프롬프트에서 URL만으로는 내용이 잘리는 문제 방지)
+    현재 프롬프트로 ChatGPT 를 연다.
+
+    components.html iframe 은 기록 전환 시 이전 JS(프롬프트)가 남는 버그가 있어
+    Streamlit 네이티브 link_button 만 사용한다. (업로드 화면의 실전 연습과 동일)
     """
     url = build_chatgpt_url(prompt)
-    components.html(
-        f"""
-        <div style="margin:0.25rem 0">
-          <button id="cgptBtn" type="button" style="width:100%;padding:0.65rem 1rem;
-            background:#10a37f;color:#fff;border:none;border-radius:0.5rem;
-            font-weight:600;font-size:0.95rem;cursor:pointer;">
-            {label}
-          </button>
-        </div>
-        <script>
-        (function () {{
-            const text = {json.dumps(prompt)};
-            const url = {json.dumps(url)};
-            document.getElementById('cgptBtn').onclick = function () {{
-                const doc = window.parent.document;
-                try {{
-                    const ta = doc.createElement('textarea');
-                    ta.value = text;
-                    ta.style.cssText = 'position:fixed;left:-9999px;top:0';
-                    doc.body.appendChild(ta);
-                    ta.focus();
-                    ta.select();
-                    doc.execCommand('copy');
-                    doc.body.removeChild(ta);
-                }} catch (e) {{}}
-                window.open(url, '_blank');
-            }};
-        }})();
-        </script>
-        """,
-        height=52,
-    )
+    if hasattr(st, "link_button"):
+        st.link_button(label, url, use_container_width=True, type="primary")
+    else:
+        st.markdown(
+            f"""
+            <a href="{html.escape(url, quote=True)}" target="_blank" rel="noopener noreferrer"
+               style="text-decoration:none;">
+                <div style="background-color:#10a37f; color:white; padding:0.65rem 1rem;
+                    border-radius:0.5rem; text-align:center; font-weight:600; margin:0.3rem 0;">
+                    {html.escape(label)}
+                </div>
+            </a>
+            """,
+            unsafe_allow_html=True,
+        )
     if show_caption:
         st.caption(
-            "💡 ChatGPT 입력창 내용이 짧으면 **붙여넣기**(길게 누르기) 하세요. "
-            "미리보기와 동일한 내용이 복사됩니다."
+            "💡 ChatGPT 입력창 내용이 짧거나 다르면, 아래 **보낼 내용 확인**에서 "
+            "복사해 붙여넣기(길게 누르기) 하세요."
         )
 
 
 def external_url_button(label: str, url: str, *, bg_color: str = "#10a37f"):
-    """
-    새 창으로 URL을 여는 Streamlit 대체 버튼.
-    chatgpt_prompt_button(components.html)와 높이/스타일을 맞추기 위해 동일 방식으로 렌더링한다.
-    """
-    components.html(
-        f"""
-        <div style="margin:0.25rem 0">
-          <button id="extBtn" type="button" style="width:100%;padding:0.65rem 1rem;
-            background:{bg_color};color:#fff;border:none;border-radius:0.5rem;
-            font-weight:600;font-size:0.95rem;cursor:pointer; min-height:44px;">
-            {html.escape(label)}
-          </button>
-        </div>
-        <script>
-        (function () {{
-            const btn = document.getElementById('extBtn');
-            const url = {json.dumps(url)};
-            btn.onclick = function () {{
-                window.open(url, '_blank');
-            }};
-        }})();
-        </script>
-        """,
-        height=52,
-    )
+    """새 창으로 URL을 여는 버튼 (네이티브 link — iframe 잔상 없음)."""
+    if hasattr(st, "link_button"):
+        # type 으로 색을 맞추기 어렵다면 primary/secondary 만 구분
+        btn_type = "primary" if bg_color.lower() in {"#10a37f", "#10a37f"} else "secondary"
+        if bg_color.lower() in {"#7c3aed", "#7c3aed"}:
+            btn_type = "secondary"
+        st.link_button(label, url, use_container_width=True, type=btn_type)
+    else:
+        st.markdown(
+            f"""
+            <a href="{html.escape(url, quote=True)}" target="_blank" rel="noopener noreferrer"
+               style="text-decoration:none;">
+                <div style="background-color:{html.escape(bg_color)}; color:white; padding:0.65rem 1rem;
+                    border-radius:0.5rem; text-align:center; font-weight:600; margin:0.3rem 0;
+                    min-height:44px;">
+                    {html.escape(label)}
+                </div>
+            </a>
+            """,
+            unsafe_allow_html=True,
+        )
 
 
 def build_roleplay_prompt(keywords: str, *, mode: str = "new") -> str:
@@ -483,10 +464,27 @@ def has_draft_content(image_bytes: Optional[bytes], keyword_slots: list) -> bool
     return bool(join_keywords(keyword_slots).strip())
 
 
+def draft_widget_prefix(session: Optional[dict] = None) -> str:
+    """form_round 에 묶인 숙어 위젯 prefix — 저장 후 키가 바뀌어 이전 숙어 잔상을 막는다."""
+    state = session if session is not None else st.session_state
+    round_n = int(state.get("form_round", 0))
+    return f"{DRAFT_KEY_PREFIX}_r{round_n}"
+
+
+def _clear_draft_widget_keys(session: dict) -> None:
+    """kw_draft* 위젯 키를 모두 제거 (라운드 번호 포함)."""
+    for key in list(session.keys()):
+        if str(key).startswith(f"{DRAFT_KEY_PREFIX}_"):
+            session.pop(key, None)
+
+
 def apply_clear_draft(session: dict, key_prefix: str = DRAFT_KEY_PREFIX) -> dict:
-    """draft session_state 초기화 (순수 함수 — 테스트용)."""
-    for i in range(MAX_KEYWORDS):
-        session.pop(f"{key_prefix}_{i}", None)
+    """draft session_state 초기화 (순수 함수 — 테스트용).
+
+    key_prefix 는 하위 호환용. 실제로는 kw_draft* 위젯 키를 전부 지우고 form_round 를 올린다.
+    """
+    _ = key_prefix  # 호출부 호환
+    _clear_draft_widget_keys(session)
     for key in draft_state_keys_to_clear():
         session.pop(key, None)
     session["form_round"] = int(session.get("form_round", 0)) + 1
@@ -537,7 +535,7 @@ def clear_draft_session_state() -> None:
 
 def has_active_draft() -> bool:
     """화면에 '임시 입력 유지 중' 안내를 보여줄지."""
-    kw_slots = _keyword_values_from_state(DRAFT_KEY_PREFIX)
+    kw_slots = _keyword_values_from_state(draft_widget_prefix())
     return has_draft_content(st.session_state.get(DRAFT_IMAGE_BYTES), kw_slots)
 
 
@@ -553,7 +551,7 @@ def persist_durable_draft_from_session(*, force: bool = False) -> bool:
     import english_draft as ed
 
     try:
-        kw_slots = _keyword_values_from_state(DRAFT_KEY_PREFIX)
+        kw_slots = _keyword_values_from_state(draft_widget_prefix())
     except Exception:
         kw_slots = list(st.session_state.get(DRAFT_KEYWORDS) or [])
     if not any(str(k or "").strip() for k in kw_slots):
@@ -600,18 +598,16 @@ def restore_durable_draft_to_session(draft: dict) -> None:
         keywords.append("")
     keywords = keywords[:MAX_KEYWORDS]
 
-    for i in range(MAX_KEYWORDS):
-        st.session_state.pop(f"{DRAFT_KEY_PREFIX}_{i}", None)
-
+    _clear_draft_widget_keys(st.session_state)
     st.session_state[DRAFT_KEYWORDS] = keywords
-    for i, val in enumerate(keywords):
-        if val:
-            st.session_state[f"{DRAFT_KEY_PREFIX}_{i}"] = val
-
     st.session_state[DRAFT_IMAGE_BYTES] = draft.get("image_bytes")
     st.session_state[DRAFT_IMAGE_NAME] = draft.get("image_name") or "image.jpg"
     st.session_state[DRAFT_UPLOAD_ERROR] = None
     st.session_state["form_round"] = int(st.session_state.get("form_round", 0)) + 1
+    prefix = draft_widget_prefix()
+    for i, val in enumerate(keywords):
+        if val:
+            st.session_state[f"{prefix}_{i}"] = val
     st.session_state["_draft_restored"] = True
     st.session_state.pop("draft_recovery_dismissed", None)
     for key in list(st.session_state.keys()):
@@ -1178,7 +1174,10 @@ def render_detail(rec: dict):
         key=f"edit_img_{rid}",
     )
 
-    keywords_for_prompt = (new_keywords or rec.get("keywords") or "").strip()
+    keywords_for_prompt = (rec.get("keywords") or "").strip()
+    # 사용자가 화면에서 숙어를 고쳤다면(아직 저장 전) 그 값을 우선한다.
+    if (new_keywords or "").strip():
+        keywords_for_prompt = new_keywords.strip()
     review_roleplay_prompt = None
     if keywords_for_prompt:
         review_roleplay_prompt = build_roleplay_prompt(keywords_for_prompt, mode="review")
@@ -1202,6 +1201,14 @@ def render_detail(rec: dict):
             ),
             bg_color="#7c3aed",
         )
+    if keywords_for_prompt:
+        # 사용자가 버튼이 어떤 숙어를 쓰는지 바로 확인하도록 표시
+        preview = keywords_for_prompt if len(keywords_for_prompt) <= 120 else (
+            keywords_for_prompt[:117] + "…"
+        )
+        st.caption(f"위 버튼이 사용할 표현: `{preview}`")
+        with st.expander("보낼 내용 확인 · 복사", expanded=False):
+            st.code(review_roleplay_prompt or "", language=None)
 
     st.divider()
     c1, c2, c3 = st.columns(3)
@@ -1658,7 +1665,7 @@ def main():
             if upload_error:
                 st.error(upload_error)
 
-            kw_slots = render_keyword_inputs(DRAFT_KEY_PREFIX, persist_draft=True)
+            kw_slots = render_keyword_inputs(draft_widget_prefix(), persist_draft=True)
             kw = join_keywords(kw_slots)
             st.session_state[DRAFT_CHATGPT_READY] = bool(kw)
             persist_durable_draft_from_session()
