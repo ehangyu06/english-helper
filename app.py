@@ -1329,7 +1329,7 @@ def render_records_library() -> None:
     try:
         records, total = fetch_records_page_compat(page, RECORDS_PAGE_SIZE)
     except Exception as e:
-        st.error(f"기록을 불러오는 중 오류가 발생했어요: {e}")
+        st.error(storage.format_storage_error(e))
         return
 
     if total <= 0:

@@ -101,6 +101,50 @@ def backend_name() -> str:
     return "로컬 MyKnowledge_DB"
 
 
+def format_storage_error(exc: BaseException) -> str:
+    """저장소 오류를 사용자용 한국어 안내로 바꾼다."""
+    msg = str(exc)
+    low = msg.lower()
+    is_dns = (
+        "name or service not known" in low
+        or "nodename nor servname" in low
+        or "errno -2" in low
+        or "gaierror" in low
+        or "name resolution" in low
+        or "failed to resolve" in low
+    )
+    if use_supabase() and is_dns:
+        host = ""
+        try:
+            cfg = st.secrets.get("supabase", {}) or {}
+            url = str(cfg.get("url") or "").strip()
+            if "://" in url:
+                host = url.split("://", 1)[1].split("/", 1)[0]
+            else:
+                host = url
+        except Exception:
+            host = ""
+        host_line = f"\n설정된 주소: `{host}`" if host else ""
+        return (
+            "클라우드 저장소(Supabase) 주소에 연결하지 못했습니다 "
+            "(DNS: Name or service not known)."
+            f"{host_line}\n\n"
+            "보통 아래 중 하나입니다.\n"
+            "1) Supabase 무료 프로젝트가 **일시 정지(Paused)** 됨 → "
+            "[supabase.com](https://supabase.com) 접속 후 **Restore project**\n"
+            "2) Streamlit Cloud **Secrets** 의 `supabase.url` 오타/잘못된 주소\n"
+            "3) 프로젝트 복구 직후 DNS가 아직 안 퍼짐 → 몇 분 뒤 새로고침\n\n"
+            "데이터가 삭제된 것이 아니라, **연결만 실패한 상태**입니다. "
+            "Supabase를 다시 켠 뒤 이 페이지를 새로고침하면 기록이 다시 보입니다."
+        )
+    if use_supabase():
+        return (
+            f"클라우드 저장소 연결 오류: {msg}\n\n"
+            "Supabase 대시보드와 Streamlit Secrets(`url`, `key`)를 확인해 주세요."
+        )
+    return f"로컬 저장소 오류: {msg}"
+
+
 def get_storage_info() -> dict[str, Any]:
     """화면에 표시할 저장 경로 정보를 반환한다."""
     if use_supabase():
